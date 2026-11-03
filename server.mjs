@@ -1,0 +1,300 @@
+import { createServer } from "node:http";
+import { DatabaseSync } from "node:sqlite";
+import { pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { extname, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL(".", import.meta.url));
+const publicRoot = resolve(root, "public");
+const dataDir = resolve(root, process.env.DATA_DIR || "data");
+const dbPath = resolve(dataDir, process.env.DB_FILE || "wishlist.sqlite");
+const port = Number(process.env.PORT || 3000);
+const cookieName = "wishlist_session";
+const sessionSeconds = 60 * 60 * 24 * 30;
+const passwordIterations = 310_000;
+const passwordBytes = 32;
+const loginFailures = new Map();
+
+if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 16) {
+  console.error("ADMIN_PASSWORD is missing or too short. Start the app with the supplied .env file.");
+  process.exit(1);
+}
+mkdirSync(dataDir, { recursive: true });
+const db = new DatabaseSync(dbPath);
+db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS members (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0,1)),
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS access_rules (
+    owner_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    viewer_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    can_view INTEGER NOT NULL DEFAULT 0 CHECK (can_view IN (0,1)),
+    can_suggest INTEGER NOT NULL DEFAULT 0 CHECK (can_suggest IN (0,1)),
+    PRIMARY KEY (owner_id, viewer_id),
+    CHECK (owner_id <> viewer_id),
+    CHECK (can_suggest = 0 OR can_view = 1)
+  );
+  CREATE TABLE IF NOT EXISTS wishes (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS suggestions (
+    id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    author_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS sessions_member_idx ON sessions(member_id);
+  CREATE INDEX IF NOT EXISTS wishes_owner_created_idx ON wishes(owner_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS suggestions_owner_created_idx ON suggestions(owner_id, created_at DESC);
+`);
+
+if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
+  const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
+  const salt = randomBytes(16).toString("hex");
+  const hash = hashPassword(process.env.ADMIN_PASSWORD, salt);
+  db.prepare("INSERT INTO members (id,name,username,password_salt,password_hash,is_admin,created_at) VALUES (?,?,?,?,?,1,?)")
+    .run(randomBytes(16).toString("hex"), "Организатор", username, salt, hash, new Date().toISOString());
+  console.log(`Created first administrator account: ${username}`);
+}
+
+function hashPassword(password, saltHex) {
+  return pbkdf2Sync(password, Buffer.from(saltHex, "hex"), passwordIterations, passwordBytes, "sha256").toString("hex");
+}
+function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
+function send(res, status, data, extra = {}) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...securityHeaders(), ...extra });
+  res.end(JSON.stringify(data));
+}
+function securityHeaders() {
+  return {
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "same-origin",
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  };
+}
+function readBody(req) {
+  return new Promise((resolveBody, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 64 * 1024) { reject(new Error("Слишком большой запрос.")); req.destroy(); }
+    });
+    req.on("end", () => {
+      try { resolveBody(body ? JSON.parse(body) : {}); }
+      catch { reject(new Error("Некорректный JSON.")); }
+    });
+    req.on("error", reject);
+  });
+}
+function originIsLocal(req) {
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try { return new URL(origin).host === req.headers.host; }
+  catch { return false; }
+}
+function cookieToken(req) {
+  const raw = req.headers.cookie || "";
+  const part = raw.split(";").map((value) => value.trim()).find((value) => value.startsWith(`${cookieName}=`));
+  return part?.slice(cookieName.length + 1) || "";
+}
+function cookieHeader(req, token, maxAge) {
+  const forwardedHttps = process.env.TRUST_PROXY === "1" && req.headers["x-forwarded-proto"] === "https";
+  const secure = forwardedHttps || (process.env.TRUST_PROXY !== "1" && req.socket.encrypted) ? "; Secure" : "";
+  return `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+function memberFromRequest(req) {
+  const token = cookieToken(req);
+  if (!/^[a-f0-9]{64}$/.test(token)) return null;
+  return db.prepare(`SELECT m.id,m.name,m.username,m.is_admin FROM sessions s JOIN members m ON m.id=s.member_id
+    WHERE s.token_hash=? AND s.expires_at>?`).get(sha256(token), Math.floor(Date.now() / 1000)) || null;
+}
+function needSameOrigin(req, res) {
+  if (originIsLocal(req)) return true;
+  send(res, 403, { error: "Отклонён запрос с другого сайта." });
+  return false;
+}
+function needMember(req, res) {
+  const member = memberFromRequest(req);
+  if (member) return member;
+  send(res, 401, { error: "Сначала войдите в аккаунт." });
+  return null;
+}
+function needAdmin(member, res) {
+  if (member.is_admin) return true;
+  send(res, 403, { error: "Это действие доступно только организатору." });
+  return false;
+}
+function fail(res, error, status = 400) { send(res, status, { error }); }
+function isValidUsername(value) { return /^[a-z0-9._-]{3,32}$/.test(value); }
+function memberListFor(member) {
+  if (member.is_admin) return db.prepare("SELECT id,name,username,is_admin FROM members ORDER BY name COLLATE NOCASE").all();
+  return db.prepare(`SELECT id,name,username,is_admin FROM members WHERE id=? OR id IN
+    (SELECT owner_id FROM access_rules WHERE viewer_id=? AND can_view=1) ORDER BY name COLLATE NOCASE`).all(member.id, member.id);
+}
+function bootstrap(member) {
+  const members = memberListFor(member);
+  const access = member.is_admin
+    ? db.prepare("SELECT owner_id,viewer_id,can_view,can_suggest FROM access_rules").all()
+    : db.prepare("SELECT owner_id,viewer_id,can_view,can_suggest FROM access_rules WHERE viewer_id=? OR owner_id=?").all(member.id, member.id);
+  const wishes = db.prepare(`SELECT w.id,w.owner_id AS ownerId,w.title,w.url,w.note,w.created_at AS createdAt,m.name AS ownerName
+    FROM wishes w JOIN members m ON m.id=w.owner_id
+    WHERE w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1)
+    ORDER BY w.created_at DESC`).all(member.id, member.id);
+  const suggestions = db.prepare(`SELECT s.id,s.owner_id AS ownerId,s.author_id AS authorId,s.body,s.created_at AS createdAt,
+    a.name AS authorName,o.name AS ownerName FROM suggestions s JOIN members a ON a.id=s.author_id JOIN members o ON o.id=s.owner_id
+    WHERE s.owner_id=? OR s.author_id=? ORDER BY s.created_at DESC`).all(member.id, member.id);
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, suggestions };
+}
+
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  try {
+    if (req.method === "GET" && url.pathname === "/api/data") {
+      const member = needMember(req, res);
+      if (member) send(res, 200, bootstrap(member));
+      return;
+    }
+    if (req.method === "POST" && !needSameOrigin(req, res)) return;
+    if (req.method === "POST" && url.pathname === "/api/login") {
+      const body = await readBody(req);
+      const username = String(body.username || "").trim().toLowerCase();
+      const password = String(body.password || "");
+      const ip = req.socket.remoteAddress || "local";
+      const now = Date.now();
+      const state = loginFailures.get(ip);
+      if (state && now - state.start < 15 * 60_000 && state.count >= 8) return fail(res, "Слишком много попыток. Подождите 15 минут.", 429);
+      const account = db.prepare("SELECT id,password_salt,password_hash FROM members WHERE username=? COLLATE NOCASE").get(username);
+      const salt = account?.password_salt || "00000000000000000000000000000000";
+      const actual = Buffer.from(hashPassword(password.slice(0, 256), salt), "hex");
+      const expected = Buffer.from(account?.password_hash || "00".repeat(passwordBytes), "hex");
+      const valid = !!account && timingSafeEqual(actual, expected);
+      if (!valid) {
+        const prior = state && now - state.start < 15 * 60_000 ? state : { start: now, count: 0 };
+        loginFailures.set(ip, { start: prior.start, count: prior.count + 1 });
+        return fail(res, "Неверный логин или пароль.", 401);
+      }
+      loginFailures.delete(ip);
+      db.prepare("DELETE FROM sessions WHERE expires_at<=?").run(Math.floor(now / 1000));
+      const token = randomBytes(32).toString("hex");
+      db.prepare("INSERT INTO sessions (token_hash,member_id,expires_at,created_at) VALUES (?,?,?,?)")
+        .run(sha256(token), account.id, Math.floor(now / 1000) + sessionSeconds, Math.floor(now / 1000));
+      send(res, 200, { ok: true }, { "set-cookie": cookieHeader(req, token, sessionSeconds) });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/logout") {
+      const token = cookieToken(req);
+      if (/^[a-f0-9]{64}$/.test(token)) db.prepare("DELETE FROM sessions WHERE token_hash=?").run(sha256(token));
+      send(res, 200, { ok: true }, { "set-cookie": cookieHeader(req, "", 0) });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/members") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const body = await readBody(req);
+      const name = String(body.name || "").trim().slice(0, 80);
+      const username = String(body.username || "").trim().toLowerCase();
+      const password = String(body.password || "");
+      if (!name || !isValidUsername(username) || password.length < 12 || password.length > 256) return fail(res, "Имя обязательно, логин — 3–32 символа, пароль — не менее 12 символов.");
+      const salt = randomBytes(16).toString("hex");
+      try {
+        db.prepare("INSERT INTO members (id,name,username,password_salt,password_hash,is_admin,created_at) VALUES (?,?,?,?,?,0,?)")
+          .run(randomBytes(16).toString("hex"), name, username, salt, hashPassword(password, salt), new Date().toISOString());
+      } catch (error) {
+        if (String(error).includes("UNIQUE")) return fail(res, "Такой логин уже занят.", 409);
+        throw error;
+      }
+      send(res, 201, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/wishes") {
+      const member = needMember(req, res); if (!member) return;
+      const body = await readBody(req);
+      const title = String(body.title || "").trim().slice(0, 120);
+      const note = String(body.note || "").trim().slice(0, 500);
+      const rawUrl = String(body.url || "").trim().slice(0, 500);
+      if (!title) return fail(res, "Введите название желания.");
+      let safeUrl = "";
+      if (rawUrl) {
+        try {
+          const parsed = new URL(rawUrl);
+          if (!["http:", "https:"].includes(parsed.protocol)) return fail(res, "Ссылка должна начинаться с http:// или https://.");
+          safeUrl = parsed.toString();
+        } catch { return fail(res, "Проверьте ссылку на подарок."); }
+      }
+      db.prepare("INSERT INTO wishes (id,owner_id,title,url,note,created_at) VALUES (?,?,?,?,?,?)")
+        .run(randomBytes(16).toString("hex"), member.id, title, safeUrl, note, new Date().toISOString());
+      send(res, 201, { ok: true });
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/wishes/")) {
+      const member = needMember(req, res); if (!member || !needSameOrigin(req, res)) return;
+      const id = decodeURIComponent(url.pathname.slice("/api/wishes/".length));
+      db.prepare("DELETE FROM wishes WHERE id=? AND owner_id=?").run(id, member.id);
+      send(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/suggestions") {
+      const member = needMember(req, res); if (!member) return;
+      const body = await readBody(req);
+      const ownerId = String(body.ownerId || "");
+      const text = String(body.text || "").trim().slice(0, 500);
+      const grant = db.prepare("SELECT 1 FROM access_rules WHERE owner_id=? AND viewer_id=? AND can_view=1 AND can_suggest=1").get(ownerId, member.id);
+      if (!grant) return fail(res, "Предложения для этого списка не разрешены.", 403);
+      if (!text) return fail(res, "Напишите предложение.");
+      db.prepare("INSERT INTO suggestions (id,owner_id,author_id,body,created_at) VALUES (?,?,?,?,?)")
+        .run(randomBytes(16).toString("hex"), ownerId, member.id, text, new Date().toISOString());
+      send(res, 201, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/access") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const body = await readBody(req);
+      const ownerId = String(body.ownerId || "");
+      const viewerId = String(body.viewerId || "");
+      const canView = body.canView === true;
+      const canSuggest = body.canSuggest === true && canView;
+      if (!ownerId || !viewerId || ownerId === viewerId) return fail(res, "Неверно выбрана пара участников.");
+      db.prepare(`INSERT INTO access_rules (owner_id,viewer_id,can_view,can_suggest) VALUES (?,?,?,?)
+        ON CONFLICT(owner_id,viewer_id) DO UPDATE SET can_view=excluded.can_view,can_suggest=excluded.can_suggest`)
+        .run(ownerId, viewerId, Number(canView), Number(canSuggest));
+      send(res, 200, { ok: true });
+      return;
+    }
+
+    if (req.method !== "GET" && req.method !== "HEAD") { send(res, 404, { error: "Не найдено." }); return; }
+    const relative = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+    const file = resolve(publicRoot, `.${relative}`);
+    if (!file.startsWith(publicRoot + sep) && file !== resolve(publicRoot, "index.html")) { send(res, 404, { error: "Не найдено." }); return; }
+    if (!existsSync(file) || !statSync(file).isFile()) { send(res, 404, { error: "Не найдено." }); return; }
+    const mime = ({ ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" })[extname(file)] || "application/octet-stream";
+    res.writeHead(200, { "content-type": mime, "cache-control": "no-store", ...securityHeaders() });
+    res.end(req.method === "HEAD" ? undefined : readFileSync(file));
+  } catch (error) {
+    console.error("Request failed:", error?.message || "unknown error");
+    if (!res.headersSent) send(res, 500, { error: "Внутренняя ошибка сервера." });
+    else res.end();
+  }
+});
+
+server.listen(port, "0.0.0.0", () => console.log(`Письмо Деду Морозу доступно на http://localhost:${port}`));
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { db.close(); server.close(() => process.exit(0)); });
