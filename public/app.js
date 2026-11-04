@@ -5,6 +5,7 @@ const appError = document.querySelector("#app-error");
 const appNotice = document.querySelector("#app-notice");
 let data = null;
 let selectedId = "";
+let showArchivedWishes = false;
 let currentTab = "list";
 let busy = false;
 let visitLogged = false;
@@ -77,15 +78,19 @@ function renderWishlist() {
   byId("circle-hint").textContent = accessible.length === 1 ? "Пока здесь только ваш список." : "Выберите, чьи желания посмотреть.";
   byId("add-wish-toggle").hidden = !own;
   byId("wish-form").hidden = own ? byId("wish-form").hidden : true;
-  byId("wish-title").textContent = own ? "Мои желания" : `Желания: ${selected?.name || ""}`;
-  const wishes = data.wishes.filter((wish) => wish.ownerId === selectedId);
+  byId("wish-view-toggle").hidden = !own;
+  byId("active-wishes-toggle").classList.toggle("active", !showArchivedWishes);
+  byId("archived-wishes-toggle").classList.toggle("active", showArchivedWishes);
+  byId("archive-count").textContent = String(data.archivedWishes.length);
+  byId("wish-title").textContent = own ? (showArchivedWishes ? "Архив желаний" : "Мои желания") : `Желания: ${selected?.name || ""}`;
+  const wishes = (showArchivedWishes && own ? data.archivedWishes : data.wishes).filter((wish) => wish.ownerId === selectedId);
   byId("wish-count").textContent = `${wishes.length} ${wishes.length === 1 ? "пожелание" : "пожеланий"}`;
   const grid = byId("wish-grid"); grid.replaceChildren();
   if (!wishes.length) {
     const empty = node("div", "empty-state");
-    empty.append(node("span", "", "✧"), node("h3", "", own ? "Здесь появятся ваши желания" : "Список пока пуст"));
-    empty.append(node("p", "", own ? "Добавьте первую идею — её увидят только вы, пока не откроете доступ." : "У этого участника пока нет желаний."));
-    if (own) { const add = node("button", "text-button", "Добавить первое желание →"); add.type = "button"; add.addEventListener("click", () => { byId("wish-form").hidden = false; }); empty.append(add); }
+    empty.append(node("span", "", "✧"), node("h3", "", own ? (showArchivedWishes ? "Архив пока пуст" : "Здесь появятся ваши желания") : "Список пока пуст"));
+    empty.append(node("p", "", own ? (showArchivedWishes ? "Уберите сюда желания, которые пока не нужны в общем списке." : "Добавьте первую идею — её увидят только вы, пока вы не откроете доступ.") : "У этого участника пока нет желаний."));
+    if (own && !showArchivedWishes) { const add = node("button", "text-button", "Добавить первое желание →"); add.type = "button"; add.addEventListener("click", () => { byId("wish-form").hidden = false; }); empty.append(add); }
     grid.append(empty);
   } else wishes.forEach((wish, index) => {
     const card = node("article", "wish-card");
@@ -95,7 +100,15 @@ function renderWishlist() {
     if (wish.note) card.append(node("p", "", wish.note));
     const foot = node("div", "wish-card-foot");
     if (wish.url) { const link = node("a", "", "Посмотреть подарок ↗"); link.href = wish.url; link.target = "_blank"; link.rel = "noopener noreferrer"; foot.append(link); }
-    if (own) { const del = node("button", "delete-link", "Удалить"); del.type = "button"; del.dataset.deleteWish = wish.id; foot.append(del); }
+    if (own) {
+      if (showArchivedWishes) {
+        const restore = node("button", "wish-action", "Вернуть в желания"); restore.type = "button"; restore.dataset.restoreWish = wish.id; foot.append(restore);
+        const del = node("button", "delete-link", "Удалить навсегда"); del.type = "button"; del.dataset.deleteWish = wish.id; foot.append(del);
+      } else {
+        const archive = node("button", "wish-action", "В архив"); archive.type = "button"; archive.dataset.archiveWish = wish.id; foot.append(archive);
+        const del = node("button", "delete-link", "Удалить"); del.type = "button"; del.dataset.deleteWish = wish.id; foot.append(del);
+      }
+    }
     card.append(foot); grid.append(card);
   });
   const suggest = !own && !!activeRule(selectedId, data.current.id).can_suggest;
@@ -174,7 +187,7 @@ const auditEventNames = {
   site_visit: "Посещение сайта", login_success: "Успешный вход", login_failed: "Неудачный вход", login_blocked: "Заблокированная попытка",
   logout: "Выход", member_created: "Создание участника", password_changed: "Смена пароля", member_deleted: "Удаление участника",
   access_changed: "Изменение прав", access_bulk_changed: "Массовое изменение прав", wish_added: "Добавление желания",
-  wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка",
+  wish_archived: "Желание в архиве", wish_restored: "Желание восстановлено", wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка",
 };
 function describeAgent(value) {
   const ua = String(value || "");
@@ -256,6 +269,8 @@ byId("add-wish-toggle").addEventListener("click", () => { byId("wish-form").hidd
 byId("add-member-toggle").addEventListener("click", () => { byId("member-form").hidden = !byId("member-form").hidden; });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { byId(button.dataset.close).hidden = true; }));
 byId("people-row").addEventListener("click", (event) => { const button = event.target.closest("[data-member]"); if (button) { selectedId = button.dataset.member; renderWishlist(); } });
+byId("active-wishes-toggle").addEventListener("click", () => { showArchivedWishes = false; renderWishlist(); });
+byId("archived-wishes-toggle").addEventListener("click", () => { showArchivedWishes = true; renderWishlist(); });
 byId("wish-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
   const formElement = event.currentTarget; const form = new FormData(formElement);
@@ -266,8 +281,15 @@ byId("wish-form").addEventListener("submit", async (event) => {
   finally { setBusy(false); }
 });
 byId("wish-grid").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-delete-wish]"); if (!button) return;
-  try { await api(`/api/wishes/${encodeURIComponent(button.dataset.deleteWish)}`, { method: "DELETE" }); message(appNotice, "Желание удалено."); await load(); }
+  const button = event.target.closest("[data-delete-wish], [data-archive-wish], [data-restore-wish]"); if (!button) return;
+  if (button.dataset.deleteWish && !confirm(showArchivedWishes ? "Удалить желание навсегда? Восстановить его будет нельзя." : "Удалить желание навсегда? Его нельзя будет восстановить.")) return;
+  try {
+    let notice = "";
+    if (button.dataset.archiveWish) { await api(`/api/wishes/${encodeURIComponent(button.dataset.archiveWish)}/archive`, { method: "POST", body: "{}" }); notice = "Желание перемещено в архив. Другие участники его больше не увидят."; }
+    else if (button.dataset.restoreWish) { await api(`/api/wishes/${encodeURIComponent(button.dataset.restoreWish)}/restore`, { method: "POST", body: "{}" }); notice = "Желание возвращено в список."; }
+    else { await api(`/api/wishes/${encodeURIComponent(button.dataset.deleteWish)}`, { method: "DELETE" }); notice = "Желание удалено."; }
+    message(appNotice, notice); await load();
+  }
   catch (error) { message(appError, error.message); }
 });
 byId("member-form").addEventListener("submit", async (event) => {
