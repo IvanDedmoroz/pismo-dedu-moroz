@@ -55,7 +55,8 @@ db.exec(`
     title TEXT NOT NULL,
     url TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    archived_at TEXT
   );
   CREATE TABLE IF NOT EXISTS suggestions (
     id TEXT PRIMARY KEY,
@@ -82,6 +83,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS audit_logs_username_idx ON audit_logs(username, created_at DESC);
 `);
+
+// Add the archive marker to databases created by earlier versions.
+const wishColumns = db.prepare("PRAGMA table_info(wishes)").all();
+if (!wishColumns.some((column) => column.name === "archived_at")) {
+  db.exec("ALTER TABLE wishes ADD COLUMN archived_at TEXT");
+}
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
@@ -191,12 +198,14 @@ function bootstrap(member) {
     : db.prepare("SELECT owner_id,viewer_id,can_view,can_suggest FROM access_rules WHERE viewer_id=? OR owner_id=?").all(member.id, member.id);
   const wishes = db.prepare(`SELECT w.id,w.owner_id AS ownerId,w.title,w.url,w.note,w.created_at AS createdAt,m.name AS ownerName
     FROM wishes w JOIN members m ON m.id=w.owner_id
-    WHERE w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1)
+    WHERE w.archived_at IS NULL AND (w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1))
     ORDER BY w.created_at DESC`).all(member.id, member.id);
+  const archivedWishes = db.prepare(`SELECT id,owner_id AS ownerId,title,url,note,created_at AS createdAt
+    FROM wishes WHERE owner_id=? AND archived_at IS NOT NULL ORDER BY archived_at DESC`).all(member.id);
   const suggestions = db.prepare(`SELECT s.id,s.owner_id AS ownerId,s.author_id AS authorId,s.body,s.created_at AS createdAt,
     a.name AS authorName,o.name AS ownerName FROM suggestions s JOIN members a ON a.id=s.author_id JOIN members o ON o.id=s.owner_id
     WHERE s.owner_id=? OR s.author_id=? ORDER BY s.created_at DESC`).all(member.id, member.id);
-  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, suggestions };
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, archivedWishes, suggestions };
 }
 
 const server = createServer(async (req, res) => {
@@ -352,6 +361,23 @@ const server = createServer(async (req, res) => {
       const wish = db.prepare("SELECT title,url,note FROM wishes WHERE id=? AND owner_id=?").get(id, member.id);
       db.prepare("DELETE FROM wishes WHERE id=? AND owner_id=?").run(id, member.id);
       if (wish) audit(req, "wish_deleted", member, { details: wish });
+      send(res, 200, { ok: true });
+      return;
+    }
+    const wishStateMatch = url.pathname.match(/^\/api\/wishes\/([^/]+)\/(archive|restore)$/);
+    if (req.method === "POST" && wishStateMatch) {
+      const member = needMember(req, res); if (!member || !needSameOrigin(req, res)) return;
+      const id = decodeURIComponent(wishStateMatch[1]);
+      const action = wishStateMatch[2];
+      const wish = db.prepare("SELECT title FROM wishes WHERE id=? AND owner_id=?").get(id, member.id);
+      if (!wish) return fail(res, "Желание не найдено.", 404);
+      if (action === "archive") {
+        db.prepare("UPDATE wishes SET archived_at=? WHERE id=? AND owner_id=?").run(new Date().toISOString(), id, member.id);
+        audit(req, "wish_archived", member, { details: { title: wish.title } });
+      } else {
+        db.prepare("UPDATE wishes SET archived_at=NULL WHERE id=? AND owner_id=?").run(id, member.id);
+        audit(req, "wish_restored", member, { details: { title: wish.title } });
+      }
       send(res, 200, { ok: true });
       return;
     }
