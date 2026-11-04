@@ -7,6 +7,8 @@ let data = null;
 let selectedId = "";
 let currentTab = "list";
 let busy = false;
+let visitLogged = false;
+let auditState = { rows: [], total: 0, page: 1, pages: 1, ipSource: "direct" };
 
 const byId = (id) => document.getElementById(id);
 const node = (tag, className = "", text = "") => {
@@ -30,6 +32,10 @@ async function load() {
   try {
     data = await api("/api/data");
     if (!selectedId || !data.members.some((m) => m.id === selectedId)) selectedId = data.current.id;
+    if (!visitLogged) {
+      visitLogged = true;
+      api("/api/visit", { method: "POST", body: "{}" }).catch(() => {});
+    }
     showApp(); render();
   } catch (error) {
     if (error.message !== "Сеанс завершён. Войдите снова.") showLogin("");
@@ -43,12 +49,16 @@ function render() {
   byId("user-avatar").textContent = (data.current.name || "?").slice(0, 1).toUpperCase();
   byId("user-label").textContent = data.current.name;
   byId("access-tab").hidden = !data.current.isAdmin;
+  byId("audit-tab").hidden = !data.current.isAdmin;
   byId("access-tab").classList.toggle("active", currentTab === "access");
+  byId("audit-tab").classList.toggle("active", currentTab === "audit");
   document.querySelector('[data-tab="list"]').classList.toggle("active", currentTab === "list");
   byId("list-panel").hidden = currentTab !== "list";
   byId("access-panel").hidden = currentTab !== "access" || !data.current.isAdmin;
+  byId("audit-panel").hidden = currentTab !== "audit" || !data.current.isAdmin;
   if (currentTab === "access" && data.current.isAdmin) renderMatrix();
-  else renderWishlist();
+  else if (currentTab === "audit" && data.current.isAdmin) loadAudit();
+  else if (currentTab === "list") renderWishlist();
 }
 function renderWishlist() {
   const own = selectedId === data.current.id;
@@ -160,6 +170,66 @@ function renderMemberManagement() {
   });
   if (!list.childElementCount) list.append(node("p", "table-hint", "Пока нет участников для управления."));
 }
+const auditEventNames = {
+  site_visit: "Посещение сайта", login_success: "Успешный вход", login_failed: "Неудачный вход", login_blocked: "Заблокированная попытка",
+  logout: "Выход", member_created: "Создание участника", password_changed: "Смена пароля", member_deleted: "Удаление участника",
+  access_changed: "Изменение прав", access_bulk_changed: "Массовое изменение прав", wish_added: "Добавление желания",
+  wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка",
+};
+function describeAgent(value) {
+  const ua = String(value || "");
+  const browser = /YaBrowser\/([\d.]+)/.exec(ua)?.[0] ? "Яндекс Браузер" : /Edg\/([\d.]+)/.test(ua) ? "Microsoft Edge" : /Firefox\/([\d.]+)/.test(ua) ? "Firefox" : /Chrome\/([\d.]+)/.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "Браузер не определён";
+  const device = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iPod/i.test(ua) ? "iPhone/iPad" : /Windows/i.test(ua) ? "Windows" : /Mac OS/i.test(ua) ? "macOS" : /Linux/i.test(ua) ? "Linux" : "устройство не определено";
+  return `${browser} · ${device}`;
+}
+function auditDetailText(details = {}) {
+  const names = { title: "Желание", url: "Ссылка", note: "Примечание", text: "Текст идеи", viewer: "Кто получил доступ", canView: "Просмотр", updated: "Изменено пар", before: "Было", after: "Стало", reason: "Причина", pairs: "Участники" };
+  const valueText = (value) => {
+    if (typeof value === "boolean") return value ? "да" : "нет";
+    if (Array.isArray(value)) return value.map((entry) => typeof entry === "object" ? `${entry.viewer || "?"} → ${entry.owner || "?"}` : String(entry)).join(", ");
+    if (value && typeof value === "object") return Object.entries(value).map(([key, item]) => `${key === "canView" ? "видеть" : key === "canSuggest" ? "предлагать" : key}: ${valueText(item)}`).join("; ");
+    if (value === "invalid_credentials") return "неверный логин или пароль";
+    if (value === "rate_limited") return "превышено число попыток входа";
+    return String(value ?? "");
+  };
+  return Object.entries(details).map(([key, value]) => `${names[key] || key}: ${valueText(value)}`).join(" · ") || "—";
+}
+async function loadAudit(resetPage = false) {
+  if (resetPage) auditState.page = 1;
+  const form = new FormData(byId("audit-filters"));
+  const query = new URLSearchParams({
+    q: String(form.get("q") || ""), event: String(form.get("event") || "all"),
+    from: String(form.get("from") || ""), to: String(form.get("to") || ""),
+    order: String(form.get("order") || "newest"), page: String(auditState.page),
+  });
+  try {
+    auditState = await api(`/api/audit-logs?${query}`);
+    renderAudit();
+  } catch (error) { message(appError, error.message); }
+}
+function renderAudit() {
+  byId("audit-ip-note").hidden = auditState.ipSource === "proxy";
+  const tbody = byId("audit-rows"); tbody.replaceChildren();
+  auditState.rows.forEach((entry) => {
+    const row = node("tr");
+    row.append(node("td", "audit-time", new Date(entry.createdAt).toLocaleString("ru-RU")));
+    row.append(node("td", "", auditEventNames[entry.eventType] || entry.eventType));
+    const account = entry.displayName ? `${entry.displayName} (@${entry.username})` : entry.username ? `@${entry.username} (не вошёл)` : "—";
+    const accountCell = node("td", ""); accountCell.append(node("strong", "audit-account", account));
+    if (entry.targetUsername) accountCell.append(node("small", "audit-target", `Участник: ${entry.targetName || ""} (@${entry.targetUsername})`));
+    row.append(accountCell, node("td", "audit-ip", entry.ip || "—"));
+    const agentCell = node("td", "audit-agent", describeAgent(entry.userAgent)); agentCell.title = entry.userAgent || ""; row.append(agentCell);
+    row.append(node("td", "audit-details", auditDetailText(entry.details)));
+    tbody.append(row);
+  });
+  if (!auditState.rows.length) { const row = node("tr"); const cell = node("td", "audit-empty", "Записей по этим условиям нет."); cell.colSpan = 6; row.append(cell); tbody.append(row); }
+  const start = auditState.total ? (auditState.page - 1) * 100 + 1 : 0;
+  const end = Math.min(auditState.page * 100, auditState.total);
+  byId("audit-summary").textContent = `Записи ${start}–${end} из ${auditState.total}. Новые события появляются после обновления списка.`;
+  byId("audit-page-label").textContent = `Страница ${auditState.page} из ${auditState.pages}`;
+  byId("audit-prev").disabled = auditState.page <= 1;
+  byId("audit-next").disabled = auditState.page >= auditState.pages;
+}
 function permission(label, field, checked, ownerId, viewerId, enabled) {
   const labelNode = node("label");
   const input = document.createElement("input"); input.type = "checkbox"; input.checked = checked; input.disabled = !enabled;
@@ -168,6 +238,10 @@ function permission(label, field, checked, ownerId, viewerId, enabled) {
 }
 
 document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { currentTab = button.dataset.tab; render(); }));
+byId("audit-filters").addEventListener("submit", (event) => { event.preventDefault(); loadAudit(true); });
+byId("audit-reset").addEventListener("click", () => { byId("audit-filters").reset(); loadAudit(true); });
+byId("audit-prev").addEventListener("click", () => { if (auditState.page > 1) { auditState.page--; loadAudit(); } });
+byId("audit-next").addEventListener("click", () => { if (auditState.page < auditState.pages) { auditState.page++; loadAudit(); } });
 byId("login-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(loginError, "");
   const formElement = event.currentTarget; const form = new FormData(formElement);

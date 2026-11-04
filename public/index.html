@@ -22,6 +22,7 @@
         <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
         <button class="button primary sign-in" type="submit">Войти</button>
       </form>
+      <p class="fine-print">Для безопасности сайт фиксирует время посещений и входов, IP-адрес и сведения о браузере. Журнал доступен только организатору.</p>
       <p class="fine-print">Ваш список увидят только вы и участники, которым организатор открыл доступ.</p>
     </section>
     <footer>С любовью и щепоткой волшебства · 2026</footer>
@@ -41,7 +42,7 @@
       <div id="app-error" class="alert error" role="alert" hidden></div>
       <div id="app-notice" class="alert success" role="status" hidden></div>
       <div class="workspace">
-        <aside class="sidebar"><p class="section-kicker">МОЯ ПОЧТА</p><button class="nav-item active" data-tab="list"><span>♡</span> Списки желаний</button><button id="access-tab" class="nav-item" data-tab="access" hidden><span>⌘</span> Участники и доступ</button><div class="side-note"><span>✧</span><p>Секретное желание? Личный список виден только вам, пока вы не откроете доступ.</p></div></aside>
+        <aside class="sidebar"><p class="section-kicker">МОЯ ПОЧТА</p><button class="nav-item active" data-tab="list"><span>♡</span> Списки желаний</button><button id="access-tab" class="nav-item" data-tab="access" hidden><span>⌘</span> Участники и доступ</button><button id="audit-tab" class="nav-item" data-tab="audit" hidden><span>◷</span> Журнал действий</button><div class="side-note"><span>✧</span><p>Секретное желание? Личный список виден только вам, пока вы не откроете доступ.</p></div></aside>
         <section class="main-panel">
           <section id="list-panel">
             <div class="panel-heading"><div><p class="section-kicker">ВАШ КРУГ</p><h2>Списки желаний</h2><p id="circle-hint" class="muted"></p></div><button id="add-wish-toggle" class="button primary">＋ Добавить желание</button></div>
@@ -62,6 +63,20 @@
             <form id="member-form" class="inline-form member-form" hidden><label>Имя<input name="name" placeholder="Например, Маша" required maxlength="80"></label><label>Логин<input name="username" placeholder="masha" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9._-]+" autocomplete="off"></label><label>Пароль<input name="password" type="password" placeholder="Не менее 12 символов" required minlength="12" maxlength="256" autocomplete="new-password"></label><button class="button primary" type="submit">Создать аккаунт</button></form>
             <div id="matrix-wrap" class="table-wrap"></div><p class="table-hint">Переключатели у участника и списка меняют право «Видеть» сразу для всей строки или столбца. «Предложить» доступно только вместе с правом просмотра. Свой список участник видит автоматически.</p>
             <section class="member-management"><div class="panel-heading"><div><p class="section-kicker">УЧЁТНЫЕ ЗАПИСИ</p><h2>Управление участниками</h2><p class="muted">Здесь можно задать новый пароль или удалить аккаунт.</p></div></div><div id="member-management-list" class="member-management-list"></div></section>
+          </section>
+          <section id="audit-panel" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">ЖУРНАЛ БЕЗОПАСНОСТИ</p><h2>Доступы и действия</h2><p class="muted">Входы, посещения и изменения в аккаунтах. Пароли в журнал не записываются.</p></div></div>
+            <p id="audit-ip-note" class="audit-ip-note" hidden>Чтобы показывались IP посетителей, в Blitz открой Environment и задай TRUST_PROXY=1, затем перезапусти приложение.</p>
+            <form id="audit-filters" class="audit-filters">
+              <label>Поиск<input name="q" placeholder="Ник, IP, браузер или текст изменения"></label>
+              <label>Событие<select name="event"><option value="all">Все события</option><option value="site_visit">Посещение сайта</option><option value="login_success">Успешный вход</option><option value="login_failed">Неудачный вход</option><option value="login_blocked">Заблокированная попытка</option><option value="logout">Выход</option><option value="member_created">Создание участника</option><option value="password_changed">Смена пароля</option><option value="member_deleted">Удаление участника</option><option value="access_changed">Изменение прав</option><option value="access_bulk_changed">Массовое изменение прав</option><option value="wish_added">Добавление желания</option><option value="wish_deleted">Удаление желания</option><option value="suggestion_added">Идея для подарка</option></select></label>
+              <label>С даты<input name="from" type="date"></label><label>По дату<input name="to" type="date"></label>
+              <label>Порядок<select name="order"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option></select></label>
+              <button class="button primary" type="submit">Применить</button><button class="button secondary" id="audit-reset" type="button">Сбросить</button>
+            </form>
+            <p id="audit-summary" class="table-hint" aria-live="polite"></p>
+            <div class="table-wrap audit-table-wrap"><table class="audit-table"><thead><tr><th>Время</th><th>Событие</th><th>Аккаунт</th><th>IP</th><th>Браузер / устройство</th><th>Подробности</th></tr></thead><tbody id="audit-rows"></tbody></table></div>
+            <div class="audit-pagination"><button id="audit-prev" class="button secondary" type="button">← Назад</button><span id="audit-page-label"></span><button id="audit-next" class="button secondary" type="button">Дальше →</button></div>
           </section>
         </section>
       </div>
