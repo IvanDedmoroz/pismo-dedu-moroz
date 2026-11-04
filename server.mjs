@@ -226,6 +226,31 @@ const server = createServer(async (req, res) => {
       send(res, 201, { ok: true });
       return;
     }
+    if (req.method === "POST" && url.pathname.startsWith("/api/members/") && url.pathname.endsWith("/password")) {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const id = decodeURIComponent(url.pathname.slice("/api/members/".length, -"/password".length));
+      const target = db.prepare("SELECT id,is_admin FROM members WHERE id=?").get(id);
+      if (!target || target.is_admin) return fail(res, "Пароль этого аккаунта нельзя изменить здесь.", 404);
+      const body = await readBody(req);
+      const password = String(body.password || "");
+      if (password.length < 12 || password.length > 256) return fail(res, "Новый пароль должен содержать от 12 до 256 символов.");
+      const salt = randomBytes(16).toString("hex");
+      db.prepare("UPDATE members SET password_salt=?,password_hash=? WHERE id=?")
+        .run(salt, hashPassword(password, salt), id);
+      db.prepare("DELETE FROM sessions WHERE member_id=?").run(id);
+      send(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/members/")) {
+      const member = needMember(req, res); if (!member || !needSameOrigin(req, res) || !needAdmin(member, res)) return;
+      const id = decodeURIComponent(url.pathname.slice("/api/members/".length));
+      const target = db.prepare("SELECT id,is_admin FROM members WHERE id=?").get(id);
+      if (!target) return fail(res, "Участник не найден.", 404);
+      if (target.is_admin || target.id === member.id) return fail(res, "Аккаунт организатора удалить нельзя.", 400);
+      db.prepare("DELETE FROM members WHERE id=?").run(id);
+      send(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/wishes") {
       const member = needMember(req, res); if (!member) return;
       const body = await readBody(req);
@@ -278,6 +303,33 @@ const server = createServer(async (req, res) => {
         ON CONFLICT(owner_id,viewer_id) DO UPDATE SET can_view=excluded.can_view,can_suggest=excluded.can_suggest`)
         .run(ownerId, viewerId, Number(canView), Number(canSuggest));
       send(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/access/bulk") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const body = await readBody(req);
+      if (!Array.isArray(body.pairs) || body.pairs.length > 1000 || typeof body.canView !== "boolean") return fail(res, "Некорректный набор прав доступа.");
+      const memberIds = new Set(db.prepare("SELECT id FROM members").all().map((row) => row.id));
+      const pairs = new Map();
+      for (const pair of body.pairs) {
+        const ownerId = String(pair?.ownerId || "");
+        const viewerId = String(pair?.viewerId || "");
+        if (!ownerId || !viewerId || ownerId === viewerId || !memberIds.has(ownerId) || !memberIds.has(viewerId)) return fail(res, "В наборе есть неверная пара участников.");
+        pairs.set(`${ownerId}:${viewerId}`, { ownerId, viewerId });
+      }
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const update = db.prepare(`INSERT INTO access_rules (owner_id,viewer_id,can_view,can_suggest) VALUES (?,?,?,0)
+          ON CONFLICT(owner_id,viewer_id) DO UPDATE SET
+            can_suggest=CASE WHEN excluded.can_view=1 THEN access_rules.can_suggest ELSE 0 END,
+            can_view=excluded.can_view`);
+        for (const { ownerId, viewerId } of pairs.values()) update.run(ownerId, viewerId, Number(body.canView));
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+      send(res, 200, { ok: true, updated: pairs.size });
       return;
     }
 
