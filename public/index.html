@@ -60,7 +60,8 @@
           <section id="access-panel" hidden>
             <div class="panel-heading"><div><p class="section-kicker">НАСТРОЙКИ ПРОСТРАНСТВА</p><h2>Участники и доступ</h2><p class="muted">Создайте аккаунты и настройте права для каждой пары.</p></div><button id="add-member-toggle" class="button primary">＋ Добавить участника</button></div>
             <form id="member-form" class="inline-form member-form" hidden><label>Имя<input name="name" placeholder="Например, Маша" required maxlength="80"></label><label>Логин<input name="username" placeholder="masha" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9._-]+" autocomplete="off"></label><label>Пароль<input name="password" type="password" placeholder="Не менее 12 символов" required minlength="12" maxlength="256" autocomplete="new-password"></label><button class="button primary" type="submit">Создать аккаунт</button></form>
-            <div id="matrix-wrap" class="table-wrap"></div><p class="table-hint">«Предложить» доступно только вместе с правом просмотра. Свой список участник видит автоматически.</p>
+            <div id="matrix-wrap" class="table-wrap"></div><p class="table-hint">Переключатели у участника и списка меняют право «Видеть» сразу для всей строки или столбца. «Предложить» доступно только вместе с правом просмотра. Свой список участник видит автоматически.</p>
+            <section class="member-management"><div class="panel-heading"><div><p class="section-kicker">УЧЁТНЫЕ ЗАПИСИ</p><h2>Управление участниками</h2><p class="muted">Здесь можно задать новый пароль или удалить аккаунт.</p></div></div><div id="member-management-list" class="member-management-list"></div></section>
           </section>
         </section>
       </div>

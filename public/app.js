@@ -102,12 +102,25 @@ function renderWishlist() {
 function renderMatrix() {
   const wrap = byId("matrix-wrap"); wrap.replaceChildren();
   const table = node("table", "access-table");
-  const thead = node("thead"); const headRow = node("tr"); headRow.append(node("th", "", "Кто смотрит ↓ / чей список →"));
-  data.members.forEach((owner) => { const th = node("th"); th.append(node("strong", "", owner.name), node("small", "", owner.username)); headRow.append(th); });
+  const allPairs = [];
+  data.members.forEach((viewer) => data.members.forEach((owner) => { if (viewer.id !== owner.id) allPairs.push({ ownerId: owner.id, viewerId: viewer.id }); }));
+  const thead = node("thead"); const headRow = node("tr");
+  const corner = node("th"); corner.append(node("strong", "", "Кто смотрит ↓ / чей список →"));
+  if (allPairs.length) corner.append(bulkAccessControl("Весь доступ", allPairs));
+  headRow.append(corner);
+  data.members.forEach((owner) => {
+    const th = node("th"); th.append(node("strong", "", owner.name), node("small", "", owner.username));
+    const pairs = data.members.filter((viewer) => viewer.id !== owner.id).map((viewer) => ({ ownerId: owner.id, viewerId: viewer.id }));
+    if (pairs.length) th.append(bulkAccessControl("Весь столбец", pairs));
+    headRow.append(th);
+  });
   thead.append(headRow); table.append(thead);
   const tbody = node("tbody");
   data.members.forEach((viewer) => {
-    const row = node("tr"); const label = node("th"); label.append(node("strong", "", viewer.name), node("small", "", `${viewer.username}${viewer.is_admin ? " · организатор" : ""}`)); row.append(label);
+    const row = node("tr"); const label = node("th"); label.append(node("strong", "", viewer.name), node("small", "", `${viewer.username}${viewer.is_admin ? " · организатор" : ""}`));
+    const pairs = data.members.filter((owner) => owner.id !== viewer.id).map((owner) => ({ ownerId: owner.id, viewerId: viewer.id }));
+    if (pairs.length) label.append(bulkAccessControl("Вся строка", pairs));
+    row.append(label);
     data.members.forEach((owner) => {
       const cell = node("td", owner.id === viewer.id ? "self-cell" : "");
       if (owner.id === viewer.id) cell.append(node("span", "self-label", "свой список"));
@@ -121,7 +134,31 @@ function renderMatrix() {
     });
     tbody.append(row);
   });
-  table.append(tbody); wrap.append(table);
+  table.append(tbody); wrap.append(table); renderMemberManagement();
+}
+function bulkAccessControl(text, pairs) {
+  const label = node("label", "bulk-access");
+  const input = document.createElement("input"); input.type = "checkbox"; input.dataset.bulkAccess = "true"; input.checked = pairs.every(({ ownerId, viewerId }) => !!activeRule(ownerId, viewerId).can_view);
+  input.indeterminate = !input.checked && pairs.some(({ ownerId, viewerId }) => !!activeRule(ownerId, viewerId).can_view);
+  input.dataset.pairs = JSON.stringify(pairs);
+  label.append(input, document.createTextNode(text)); return label;
+}
+function renderMemberManagement() {
+  const list = byId("member-management-list"); list.replaceChildren();
+  data.members.filter((member) => !member.is_admin).forEach((member) => {
+    const card = node("article", "member-card");
+    const heading = node("div", "member-card-heading"); heading.append(node("div", "", ""));
+    heading.firstChild.append(node("strong", "", member.name), node("small", "", `Логин: ${member.username}`));
+    const form = node("form", "member-password-form"); form.dataset.passwordForm = member.id;
+    const label = node("label"); label.append(document.createTextNode("Новый пароль"));
+    const input = document.createElement("input"); input.name = "password"; input.type = "password"; input.minLength = 12; input.maxLength = 256; input.required = true; input.autocomplete = "new-password"; input.placeholder = "Не менее 12 символов";
+    label.append(input);
+    const save = node("button", "button secondary", "Сменить пароль"); save.type = "submit";
+    form.append(label, save);
+    const remove = node("button", "button danger", "Удалить участника"); remove.type = "button"; remove.dataset.deleteMember = member.id;
+    heading.append(form, remove); card.append(heading); list.append(card);
+  });
+  if (!list.childElementCount) list.append(node("p", "table-hint", "Пока нет участников для управления."));
 }
 function permission(label, field, checked, ownerId, viewerId, enabled) {
   const labelNode = node("label");
@@ -169,6 +206,15 @@ byId("member-form").addEventListener("submit", async (event) => {
   finally { setBusy(false); }
 });
 byId("matrix-wrap").addEventListener("change", async (event) => {
+  const bulk = event.target.closest("[data-bulk-access]");
+  if (bulk) {
+    const pairs = JSON.parse(bulk.dataset.pairs || "[]");
+    try {
+      await api("/api/access/bulk", { method: "POST", body: JSON.stringify({ pairs, canView: bulk.checked }) });
+      await load(); currentTab = "access"; render(); message(appNotice, bulk.checked ? "Доступ открыт для выбранных участников и списков." : "Доступ закрыт для выбранных участников и списков.");
+    } catch (error) { message(appError, error.message); await load(); currentTab = "access"; render(); }
+    return;
+  }
   const input = event.target.closest("[data-access-field]"); if (!input) return;
   const rule = activeRule(input.dataset.owner, input.dataset.viewer);
   const canView = input.dataset.accessField === "can_view" ? input.checked : !!rule.can_view;
@@ -177,6 +223,25 @@ byId("matrix-wrap").addEventListener("change", async (event) => {
     await api("/api/access", { method: "POST", body: JSON.stringify({ ownerId: input.dataset.owner, viewerId: input.dataset.viewer, canView, canSuggest }) });
     await load(); currentTab = "access"; render(); message(appNotice, "Права доступа обновлены.");
   } catch (error) { message(appError, error.message); await load(); currentTab = "access"; render(); }
+});
+byId("member-management-list").addEventListener("submit", async (event) => {
+  const formElement = event.target.closest("[data-password-form]"); if (!formElement) return;
+  event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
+  const form = new FormData(formElement);
+  try {
+    await api(`/api/members/${encodeURIComponent(formElement.dataset.passwordForm)}/password`, { method: "POST", body: JSON.stringify({ password: form.get("password") }) });
+    formElement.reset(); message(appNotice, "Пароль изменён. На всех устройствах участнику нужно войти заново.");
+  } catch (error) { message(appError, error.message); }
+  finally { setBusy(false); }
+});
+byId("member-management-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-member]"); if (!button) return;
+  const member = data.members.find((item) => item.id === button.dataset.deleteMember);
+  if (!member || !window.confirm(`Удалить участника «${member.name}»? Его желания, идеи, права доступа и активные сеансы будут удалены без возможности восстановления.`)) return;
+  try {
+    await api(`/api/members/${encodeURIComponent(member.id)}`, { method: "DELETE" });
+    message(appNotice, `Участник «${member.name}» и связанные с ним данные удалены.`); await load(); currentTab = "access"; render();
+  } catch (error) { message(appError, error.message); }
 });
 byId("suggest-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
