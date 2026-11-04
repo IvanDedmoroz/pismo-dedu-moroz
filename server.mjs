@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -63,9 +64,23 @@ db.exec(`
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    username TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    target_username TEXT NOT NULL DEFAULT '',
+    target_name TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '{}'
+  );
   CREATE INDEX IF NOT EXISTS sessions_member_idx ON sessions(member_id);
   CREATE INDEX IF NOT EXISTS wishes_owner_created_idx ON wishes(owner_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS suggestions_owner_created_idx ON suggestions(owner_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS audit_logs_username_idx ON audit_logs(username, created_at DESC);
 `);
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
@@ -81,6 +96,23 @@ function hashPassword(password, saltHex) {
   return pbkdf2Sync(password, Buffer.from(saltHex, "hex"), passwordIterations, passwordBytes, "sha256").toString("hex");
 }
 function sha256(value) { return createHash("sha256").update(value).digest("hex"); }
+function requestIp(req) {
+  if (process.env.TRUST_PROXY === "1") {
+    const forwarded = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.headers["x-real-ip"];
+    const candidate = String(forwarded || "").split(",")[0].trim();
+    if (isIP(candidate)) return candidate;
+  }
+  return req.socket.remoteAddress || "unknown";
+}
+function audit(req, eventType, actor = null, { username = "", name = "", targetUsername = "", targetName = "", details = {} } = {}) {
+  db.prepare(`INSERT INTO audit_logs (created_at,event_type,username,display_name,target_username,target_name,ip,user_agent,details)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    new Date().toISOString(), eventType,
+    String(actor?.username || username).slice(0, 80), String(actor?.name || name).slice(0, 80),
+    String(targetUsername).slice(0, 80), String(targetName).slice(0, 80), requestIp(req),
+    String(req.headers["user-agent"] || "").slice(0, 500), JSON.stringify(details),
+  );
+}
 function send(res, status, data, extra = {}) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...securityHeaders(), ...extra });
   res.end(JSON.stringify(data));
@@ -175,16 +207,50 @@ const server = createServer(async (req, res) => {
       if (member) send(res, 200, bootstrap(member));
       return;
     }
+    if (req.method === "GET" && url.pathname === "/api/audit-logs") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const q = String(url.searchParams.get("q") || "").trim().slice(0, 120);
+      const eventType = String(url.searchParams.get("event") || "");
+      const from = String(url.searchParams.get("from") || "");
+      const to = String(url.searchParams.get("to") || "");
+      const order = url.searchParams.get("order") === "oldest" ? "ASC" : "DESC";
+      const page = Math.max(1, Math.min(10000, Number.parseInt(url.searchParams.get("page") || "1", 10) || 1));
+      const filters = [];
+      const params = [];
+      if (q) {
+        filters.push("(username LIKE ? OR display_name LIKE ? OR target_username LIKE ? OR target_name LIKE ? OR ip LIKE ? OR user_agent LIKE ? OR details LIKE ?)");
+        const pattern = `%${q}%`; params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+      }
+      if (eventType && eventType !== "all") { filters.push("event_type=?"); params.push(eventType); }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(from)) { filters.push("created_at>=?"); params.push(`${from}T00:00:00.000Z`); }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(to)) { filters.push("created_at<=?"); params.push(`${to}T23:59:59.999Z`); }
+      const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+      const total = db.prepare(`SELECT COUNT(*) AS n FROM audit_logs ${where}`).get(...params).n;
+      const rows = db.prepare(`SELECT id,created_at AS createdAt,event_type AS eventType,username,display_name AS displayName,
+        target_username AS targetUsername,target_name AS targetName,ip,user_agent AS userAgent,details
+        FROM audit_logs ${where} ORDER BY created_at ${order},id ${order} LIMIT 100 OFFSET ?`).all(...params, (page - 1) * 100);
+      send(res, 200, { rows: rows.map((row) => ({ ...row, details: JSON.parse(row.details || "{}") })), total, page, pages: Math.max(1, Math.ceil(total / 100)), ipSource: process.env.TRUST_PROXY === "1" ? "proxy" : "direct" });
+      return;
+    }
     if (req.method === "POST" && !needSameOrigin(req, res)) return;
+    if (req.method === "POST" && url.pathname === "/api/visit") {
+      const member = needMember(req, res); if (!member) return;
+      audit(req, "site_visit", member);
+      send(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/login") {
       const body = await readBody(req);
       const username = String(body.username || "").trim().toLowerCase();
       const password = String(body.password || "");
-      const ip = req.socket.remoteAddress || "local";
+      const ip = requestIp(req);
       const now = Date.now();
       const state = loginFailures.get(ip);
-      if (state && now - state.start < 15 * 60_000 && state.count >= 8) return fail(res, "Слишком много попыток. Подождите 15 минут.", 429);
-      const account = db.prepare("SELECT id,password_salt,password_hash FROM members WHERE username=? COLLATE NOCASE").get(username);
+      if (state && now - state.start < 15 * 60_000 && state.count >= 8) {
+        audit(req, "login_blocked", null, { username, details: { reason: "rate_limited" } });
+        return fail(res, "Слишком много попыток. Подождите 15 минут.", 429);
+      }
+      const account = db.prepare("SELECT id,name,username,is_admin,password_salt,password_hash FROM members WHERE username=? COLLATE NOCASE").get(username);
       const salt = account?.password_salt || "00000000000000000000000000000000";
       const actual = Buffer.from(hashPassword(password.slice(0, 256), salt), "hex");
       const expected = Buffer.from(account?.password_hash || "00".repeat(passwordBytes), "hex");
@@ -192,6 +258,7 @@ const server = createServer(async (req, res) => {
       if (!valid) {
         const prior = state && now - state.start < 15 * 60_000 ? state : { start: now, count: 0 };
         loginFailures.set(ip, { start: prior.start, count: prior.count + 1 });
+        audit(req, "login_failed", null, { username, details: { reason: "invalid_credentials" } });
         return fail(res, "Неверный логин или пароль.", 401);
       }
       loginFailures.delete(ip);
@@ -199,12 +266,15 @@ const server = createServer(async (req, res) => {
       const token = randomBytes(32).toString("hex");
       db.prepare("INSERT INTO sessions (token_hash,member_id,expires_at,created_at) VALUES (?,?,?,?)")
         .run(sha256(token), account.id, Math.floor(now / 1000) + sessionSeconds, Math.floor(now / 1000));
+      audit(req, "login_success", account);
       send(res, 200, { ok: true }, { "set-cookie": cookieHeader(req, token, sessionSeconds) });
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/logout") {
+      const member = memberFromRequest(req);
       const token = cookieToken(req);
       if (/^[a-f0-9]{64}$/.test(token)) db.prepare("DELETE FROM sessions WHERE token_hash=?").run(sha256(token));
+      if (member) audit(req, "logout", member);
       send(res, 200, { ok: true }, { "set-cookie": cookieHeader(req, "", 0) });
       return;
     }
@@ -217,8 +287,10 @@ const server = createServer(async (req, res) => {
       if (!name || !isValidUsername(username) || password.length < 12 || password.length > 256) return fail(res, "Имя обязательно, логин — 3–32 символа, пароль — не менее 12 символов.");
       const salt = randomBytes(16).toString("hex");
       try {
+        const id = randomBytes(16).toString("hex");
         db.prepare("INSERT INTO members (id,name,username,password_salt,password_hash,is_admin,created_at) VALUES (?,?,?,?,?,0,?)")
-          .run(randomBytes(16).toString("hex"), name, username, salt, hashPassword(password, salt), new Date().toISOString());
+          .run(id, name, username, salt, hashPassword(password, salt), new Date().toISOString());
+        audit(req, "member_created", member, { targetUsername: username, targetName: name });
       } catch (error) {
         if (String(error).includes("UNIQUE")) return fail(res, "Такой логин уже занят.", 409);
         throw error;
@@ -229,7 +301,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname.startsWith("/api/members/") && url.pathname.endsWith("/password")) {
       const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
       const id = decodeURIComponent(url.pathname.slice("/api/members/".length, -"/password".length));
-      const target = db.prepare("SELECT id,is_admin FROM members WHERE id=?").get(id);
+      const target = db.prepare("SELECT id,name,username,is_admin FROM members WHERE id=?").get(id);
       if (!target || target.is_admin) return fail(res, "Пароль этого аккаунта нельзя изменить здесь.", 404);
       const body = await readBody(req);
       const password = String(body.password || "");
@@ -238,16 +310,18 @@ const server = createServer(async (req, res) => {
       db.prepare("UPDATE members SET password_salt=?,password_hash=? WHERE id=?")
         .run(salt, hashPassword(password, salt), id);
       db.prepare("DELETE FROM sessions WHERE member_id=?").run(id);
+      audit(req, "password_changed", member, { targetUsername: target.username, targetName: target.name });
       send(res, 200, { ok: true });
       return;
     }
     if (req.method === "DELETE" && url.pathname.startsWith("/api/members/")) {
       const member = needMember(req, res); if (!member || !needSameOrigin(req, res) || !needAdmin(member, res)) return;
       const id = decodeURIComponent(url.pathname.slice("/api/members/".length));
-      const target = db.prepare("SELECT id,is_admin FROM members WHERE id=?").get(id);
+      const target = db.prepare("SELECT id,name,username,is_admin FROM members WHERE id=?").get(id);
       if (!target) return fail(res, "Участник не найден.", 404);
       if (target.is_admin || target.id === member.id) return fail(res, "Аккаунт организатора удалить нельзя.", 400);
       db.prepare("DELETE FROM members WHERE id=?").run(id);
+      audit(req, "member_deleted", member, { targetUsername: target.username, targetName: target.name });
       send(res, 200, { ok: true });
       return;
     }
@@ -268,13 +342,16 @@ const server = createServer(async (req, res) => {
       }
       db.prepare("INSERT INTO wishes (id,owner_id,title,url,note,created_at) VALUES (?,?,?,?,?,?)")
         .run(randomBytes(16).toString("hex"), member.id, title, safeUrl, note, new Date().toISOString());
+      audit(req, "wish_added", member, { details: { title, url: safeUrl, note } });
       send(res, 201, { ok: true });
       return;
     }
     if (req.method === "DELETE" && url.pathname.startsWith("/api/wishes/")) {
       const member = needMember(req, res); if (!member || !needSameOrigin(req, res)) return;
       const id = decodeURIComponent(url.pathname.slice("/api/wishes/".length));
+      const wish = db.prepare("SELECT title,url,note FROM wishes WHERE id=? AND owner_id=?").get(id, member.id);
       db.prepare("DELETE FROM wishes WHERE id=? AND owner_id=?").run(id, member.id);
+      if (wish) audit(req, "wish_deleted", member, { details: wish });
       send(res, 200, { ok: true });
       return;
     }
@@ -288,6 +365,8 @@ const server = createServer(async (req, res) => {
       if (!text) return fail(res, "Напишите предложение.");
       db.prepare("INSERT INTO suggestions (id,owner_id,author_id,body,created_at) VALUES (?,?,?,?,?)")
         .run(randomBytes(16).toString("hex"), ownerId, member.id, text, new Date().toISOString());
+      const owner = db.prepare("SELECT name,username FROM members WHERE id=?").get(ownerId);
+      audit(req, "suggestion_added", member, { targetUsername: owner?.username, targetName: owner?.name, details: { text } });
       send(res, 201, { ok: true });
       return;
     }
@@ -299,9 +378,15 @@ const server = createServer(async (req, res) => {
       const canView = body.canView === true;
       const canSuggest = body.canSuggest === true && canView;
       if (!ownerId || !viewerId || ownerId === viewerId) return fail(res, "Неверно выбрана пара участников.");
+      const prior = db.prepare("SELECT can_view,can_suggest FROM access_rules WHERE owner_id=? AND viewer_id=?").get(ownerId, viewerId) || { can_view: 0, can_suggest: 0 };
+      const owner = db.prepare("SELECT name,username FROM members WHERE id=?").get(ownerId);
+      const viewer = db.prepare("SELECT name,username FROM members WHERE id=?").get(viewerId);
       db.prepare(`INSERT INTO access_rules (owner_id,viewer_id,can_view,can_suggest) VALUES (?,?,?,?)
         ON CONFLICT(owner_id,viewer_id) DO UPDATE SET can_view=excluded.can_view,can_suggest=excluded.can_suggest`)
         .run(ownerId, viewerId, Number(canView), Number(canSuggest));
+      audit(req, "access_changed", member, { targetUsername: owner?.username, targetName: owner?.name, details: {
+        viewer: viewer?.username || viewerId, before: { canView: !!prior.can_view, canSuggest: !!prior.can_suggest }, after: { canView, canSuggest },
+      } });
       send(res, 200, { ok: true });
       return;
     }
@@ -310,6 +395,7 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       if (!Array.isArray(body.pairs) || body.pairs.length > 1000 || typeof body.canView !== "boolean") return fail(res, "Некорректный набор прав доступа.");
       const memberIds = new Set(db.prepare("SELECT id FROM members").all().map((row) => row.id));
+      const memberInfo = new Map(db.prepare("SELECT id,name,username FROM members").all().map((row) => [row.id, row]));
       const pairs = new Map();
       for (const pair of body.pairs) {
         const ownerId = String(pair?.ownerId || "");
@@ -329,6 +415,11 @@ const server = createServer(async (req, res) => {
         db.exec("ROLLBACK");
         throw error;
       }
+      audit(req, "access_bulk_changed", member, { details: {
+        canView: body.canView,
+        updated: pairs.size,
+        pairs: Array.from(pairs.values(), ({ ownerId, viewerId }) => ({ owner: memberInfo.get(ownerId)?.username, viewer: memberInfo.get(viewerId)?.username })),
+      } });
       send(res, 200, { ok: true, updated: pairs.size });
       return;
     }
