@@ -6,6 +6,8 @@ const appNotice = document.querySelector("#app-notice");
 let data = null;
 let selectedId = "";
 let showArchivedWishes = false;
+let showArchivedFeedback = false;
+let feedbackRows = [];
 let currentTab = "list";
 let busy = false;
 let visitLogged = false;
@@ -51,15 +53,18 @@ function render() {
   byId("user-label").textContent = data.current.name;
   byId("access-tab").hidden = !data.current.isAdmin;
   byId("audit-tab").hidden = !data.current.isAdmin;
+  byId("feedback-tab").classList.toggle("active", currentTab === "feedback");
   byId("access-tab").classList.toggle("active", currentTab === "access");
   byId("audit-tab").classList.toggle("active", currentTab === "audit");
   document.querySelector('[data-tab="list"]').classList.toggle("active", currentTab === "list");
   byId("list-panel").hidden = currentTab !== "list";
+  byId("feedback-panel").hidden = currentTab !== "feedback";
   byId("access-panel").hidden = currentTab !== "access" || !data.current.isAdmin;
   byId("audit-panel").hidden = currentTab !== "audit" || !data.current.isAdmin;
   if (currentTab === "access" && data.current.isAdmin) renderMatrix();
   else if (currentTab === "audit" && data.current.isAdmin) loadAudit();
   else if (currentTab === "list") renderWishlist();
+  else if (currentTab === "feedback") loadFeedback();
 }
 function renderWishlist() {
   const own = selectedId === data.current.id;
@@ -109,6 +114,25 @@ function renderWishlist() {
         const del = node("button", "delete-link", "Удалить"); del.type = "button"; del.dataset.deleteWish = wish.id; foot.append(del);
       }
     }
+    const claim = data.giftClaims.find((item) => item.wishId === wish.id) || { count: 0, claimedByMe: false, people: [] };
+    if (!showArchivedWishes) {
+      const claimBox = node("div", `gift-claims ${own ? "gift-claims-owner" : ""}`);
+      const countWord = claim.count % 10 === 1 && claim.count % 100 !== 11 ? "участник" : claim.count % 10 >= 2 && claim.count % 10 <= 4 && (claim.count % 100 < 12 || claim.count % 100 > 14) ? "участника" : "участников";
+      const countText = claim.count ? `${claim.count} ${countWord} ${claim.count === 1 ? "готов" : "готовы"} подарить` : "Пока никто не отметил готовность";
+      const count = node("span", "gift-claim-count", countText);
+      claimBox.append(count);
+      if (own) claimBox.append(node("small", "gift-claim-privacy", "Кто именно — видит только организатор."));
+      else {
+        const pledge = node("button", `wish-action gift-claim-button ${claim.claimedByMe ? "claimed" : ""}`, claim.claimedByMe ? "✓ Вы готовы подарить · отменить" : "♡ Готов(а) подарить");
+        pledge.type = "button"; pledge.dataset.claimWish = wish.id; pledge.dataset.unclaimWish = claim.claimedByMe ? wish.id : ""; claimBox.append(pledge);
+        claimBox.append(node("small", "gift-claim-privacy", "Участники видят только число отметок."));
+      }
+      if (data.current.isAdmin && claim.people.length) {
+        const names = node("small", "gift-claim-names", `Отметили: ${claim.people.map((person) => person.name).join(", ")}`);
+        claimBox.append(names);
+      }
+      card.append(claimBox);
+    }
     card.append(foot); grid.append(card);
   });
   const suggest = !own && !!activeRule(selectedId, data.current.id).can_suggest;
@@ -125,24 +149,34 @@ function renderWishlist() {
 function renderMatrix() {
   const wrap = byId("matrix-wrap"); wrap.replaceChildren();
   const table = node("table", "access-table");
+  const layout = data.matrixLayout && typeof data.matrixLayout === "object" ? data.matrixLayout : {};
+  const columns = layout.columns || {}; const rowHeights = layout.rows || {};
+  const colgroup = node("colgroup");
+  const labelCol = node("col"); labelCol.dataset.layoutKey = "label"; labelCol.style.width = `${columns.label || 210}px`; colgroup.append(labelCol);
+  data.members.forEach((member) => { const col = node("col"); col.dataset.layoutKey = member.id; col.style.width = `${columns[member.id] || 164}px`; colgroup.append(col); });
+  table.append(colgroup);
   const allPairs = [];
   data.members.forEach((viewer) => data.members.forEach((owner) => { if (viewer.id !== owner.id) allPairs.push({ ownerId: owner.id, viewerId: viewer.id }); }));
   const thead = node("thead"); const headRow = node("tr");
-  const corner = node("th"); corner.append(node("strong", "", "Кто смотрит ↓ / чей список →"));
+  const corner = node("th", "matrix-label-column"); corner.append(node("strong", "", "Кто смотрит ↓ / чей список →"));
   if (allPairs.length) corner.append(bulkAccessControl("Весь доступ", allPairs));
+  corner.append(matrixResizeHandle("column", "label", "Изменить ширину названий"));
   headRow.append(corner);
   data.members.forEach((owner) => {
     const th = node("th"); th.append(node("strong", "", owner.name), node("small", "", owner.username));
     const pairs = data.members.filter((viewer) => viewer.id !== owner.id).map((viewer) => ({ ownerId: owner.id, viewerId: viewer.id }));
     if (pairs.length) th.append(bulkAccessControl("Весь столбец", pairs));
+    th.append(matrixResizeHandle("column", owner.id, `Изменить ширину столбца ${owner.name}`));
     headRow.append(th);
   });
   thead.append(headRow); table.append(thead);
   const tbody = node("tbody");
   data.members.forEach((viewer) => {
-    const row = node("tr"); const label = node("th"); label.append(node("strong", "", viewer.name), node("small", "", `${viewer.username}${viewer.is_admin ? " · организатор" : ""}`));
+    const row = node("tr"); if (rowHeights[viewer.id]) row.style.height = `${rowHeights[viewer.id]}px`;
+    const label = node("th", "matrix-row-label"); label.append(node("strong", "", viewer.name), node("small", "", `${viewer.username}${viewer.is_admin ? " · организатор" : ""}`));
     const pairs = data.members.filter((owner) => owner.id !== viewer.id).map((owner) => ({ ownerId: owner.id, viewerId: viewer.id }));
     if (pairs.length) label.append(bulkAccessControl("Вся строка", pairs));
+    label.append(matrixResizeHandle("row", viewer.id, `Изменить высоту строки ${viewer.name}`));
     row.append(label);
     data.members.forEach((owner) => {
       const cell = node("td", owner.id === viewer.id ? "self-cell" : "");
@@ -158,6 +192,16 @@ function renderMatrix() {
     tbody.append(row);
   });
   table.append(tbody); wrap.append(table); renderMemberManagement();
+}
+function matrixResizeHandle(axis, key, label) {
+  const handle = node("button", `matrix-resize-handle ${axis === "row" ? "row-resize-handle" : "column-resize-handle"}`);
+  handle.type = "button"; handle.title = label; handle.setAttribute("aria-label", label);
+  handle.dataset.resizeAxis = axis; handle.dataset.resizeKey = key;
+  return handle;
+}
+async function saveMatrixLayout() {
+  try { await api("/api/matrix-layout", { method: "POST", body: JSON.stringify(data.matrixLayout || { columns: {}, rows: {} }) }); }
+  catch (error) { message(appError, `Не удалось сохранить размеры матрицы: ${error.message}`); }
 }
 function bulkAccessControl(text, pairs) {
   const label = node("label", "bulk-access");
@@ -188,6 +232,8 @@ const auditEventNames = {
   logout: "Выход", member_created: "Создание участника", password_changed: "Смена пароля", member_deleted: "Удаление участника",
   access_changed: "Изменение прав", access_bulk_changed: "Массовое изменение прав", wish_added: "Добавление желания",
   wish_archived: "Желание в архиве", wish_restored: "Желание восстановлено", wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка",
+  feedback_added: "Комментарий или предложение", feedback_archived: "Запись в архиве", feedback_restored: "Запись восстановлена",
+  gift_claim_added: "Готовность сделать подарок", gift_claim_removed: "Отметка о подарке снята",
 };
 function describeAgent(value) {
   const ua = String(value || "");
@@ -196,7 +242,7 @@ function describeAgent(value) {
   return `${browser} · ${device}`;
 }
 function auditDetailText(details = {}) {
-  const names = { title: "Желание", url: "Ссылка", note: "Примечание", text: "Текст идеи", viewer: "Кто получил доступ", canView: "Просмотр", updated: "Изменено пар", before: "Было", after: "Стало", reason: "Причина", pairs: "Участники" };
+  const names = { title: "Желание", url: "Ссылка", note: "Примечание", text: "Текст идеи", kind: "Тип", viewer: "Кто получил доступ", canView: "Просмотр", updated: "Изменено пар", before: "Было", after: "Стало", reason: "Причина", pairs: "Участники" };
   const valueText = (value) => {
     if (typeof value === "boolean") return value ? "да" : "нет";
     if (Array.isArray(value)) return value.map((entry) => typeof entry === "object" ? `${entry.viewer || "?"} → ${entry.owner || "?"}` : String(entry)).join(", ");
@@ -250,11 +296,110 @@ function permission(label, field, checked, ownerId, viewerId, enabled) {
   labelNode.append(input, document.createTextNode(` ${label}`)); return labelNode;
 }
 
+async function loadFeedback() {
+  const form = byId("feedback-filters");
+  const values = new FormData(form);
+  const query = new URLSearchParams({ q: String(values.get("q") || ""), kind: String(values.get("kind") || "all"), order: String(values.get("order") || "newest"), archived: showArchivedFeedback ? "1" : "0" });
+  try {
+    const result = await api(`/api/feedback?${query}`);
+    feedbackRows = result.rows;
+    renderFeedback();
+  } catch (error) { message(appError, error.message); }
+}
+function renderFeedback() {
+  const list = byId("feedback-list"); list.replaceChildren();
+  byId("feedback-form").hidden = showArchivedFeedback;
+  const archiveButton = byId("feedback-archive-toggle");
+  archiveButton.textContent = showArchivedFeedback ? "← К общим записям" : data.current.isAdmin ? "Архив участников" : "Мой архив";
+  archiveButton.classList.toggle("active", showArchivedFeedback);
+  byId("feedback-summary").textContent = showArchivedFeedback
+    ? `Архивные записи ${data.current.isAdmin ? "всех участников" : "видны только вам"}: ${feedbackRows.length}.`
+    : `Общие записи видны всем участникам: ${feedbackRows.length}.`;
+  if (!feedbackRows.length) {
+    list.append(node("div", "feedback-empty", showArchivedFeedback ? "В архиве пока нет записей." : "Пока никто не оставил комментариев. Будьте первыми!"));
+    return;
+  }
+  feedbackRows.forEach((entry) => {
+    const card = node("article", `feedback-card ${entry.archivedAt ? "is-archived" : ""}`);
+    const head = node("div", "feedback-card-head");
+    head.append(node("span", `feedback-kind ${entry.kind}`, entry.kind === "suggestion" ? "Предложение по улучшению" : "Комментарий"));
+    head.append(node("span", "feedback-date", new Date(entry.createdAt).toLocaleString("ru-RU")));
+    card.append(head);
+    if (entry.title) card.append(node("h3", "feedback-title", entry.title));
+    const author = node("div", "feedback-author");
+    author.append(node("span", "avatar small", entry.authorName.slice(0, 1).toUpperCase()));
+    author.append(node("strong", "", `${entry.authorName}${data.current.isAdmin ? ` · @${entry.authorUsername}` : ""}`));
+    card.append(author, node("p", "feedback-body", entry.body));
+    if (entry.authorId === data.current.id || data.current.isAdmin) {
+      const action = node("button", "wish-action feedback-archive-action", entry.archivedAt ? "Вернуть в общие записи" : "В архив");
+      action.type = "button"; action.dataset.feedbackAction = entry.archivedAt ? "restore" : "archive"; action.dataset.feedbackId = entry.id;
+      card.append(action);
+    }
+    list.append(card);
+  });
+}
+
 document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { currentTab = button.dataset.tab; render(); }));
 byId("audit-filters").addEventListener("submit", (event) => { event.preventDefault(); loadAudit(true); });
 byId("audit-reset").addEventListener("click", () => { byId("audit-filters").reset(); loadAudit(true); });
 byId("audit-prev").addEventListener("click", () => { if (auditState.page > 1) { auditState.page--; loadAudit(); } });
 byId("audit-next").addEventListener("click", () => { if (auditState.page < auditState.pages) { auditState.page++; loadAudit(); } });
+byId("feedback-filters").addEventListener("submit", (event) => { event.preventDefault(); loadFeedback(); });
+byId("feedback-archive-toggle").addEventListener("click", () => { showArchivedFeedback = !showArchivedFeedback; loadFeedback(); });
+byId("feedback-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
+  const formElement = event.currentTarget; const form = new FormData(formElement);
+  try {
+    await api("/api/feedback", { method: "POST", body: JSON.stringify({ kind: form.get("kind"), title: form.get("title"), text: form.get("text") }) });
+    formElement.reset(); message(appNotice, "Запись опубликована и теперь видна участникам."); await loadFeedback();
+  } catch (error) { message(appError, error.message); }
+  finally { setBusy(false); }
+});
+byId("feedback-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-feedback-action]"); if (!button) return;
+  try {
+    await api(`/api/feedback/${encodeURIComponent(button.dataset.feedbackId)}/${button.dataset.feedbackAction}`, { method: "POST", body: "{}" });
+    message(appNotice, button.dataset.feedbackAction === "archive" ? "Запись убрана из общих и перемещена в архив." : "Запись возвращена в общие.");
+    await loadFeedback();
+  } catch (error) { message(appError, error.message); }
+});
+byId("matrix-reset").addEventListener("click", async () => {
+  if (!data?.current.isAdmin) return;
+  data.matrixLayout = { columns: {}, rows: {} };
+  renderMatrix();
+  await saveMatrixLayout();
+  message(appNotice, "Размеры матрицы восстановлены по умолчанию.");
+});
+let matrixDrag = null;
+byId("matrix-wrap").addEventListener("pointerdown", (event) => {
+  const handle = event.target.closest("[data-resize-axis]"); if (!handle) return;
+  event.preventDefault();
+  const axis = handle.dataset.resizeAxis; const key = handle.dataset.resizeKey;
+  const element = axis === "column"
+    ? byId("matrix-wrap").querySelector(`col[data-layout-key="${CSS.escape(key)}"]`)
+    : handle.closest("tr");
+  if (!element) return;
+  matrixDrag = { axis, key, start: axis === "column" ? event.clientX : event.clientY, size: axis === "column" ? element.getBoundingClientRect().width : element.getBoundingClientRect().height, element, handle };
+  handle.setPointerCapture(event.pointerId);
+});
+document.addEventListener("pointermove", (event) => {
+  if (!matrixDrag) return;
+  const delta = (matrixDrag.axis === "column" ? event.clientX : event.clientY) - matrixDrag.start;
+  const size = Math.round(Math.max(matrixDrag.axis === "column" ? 100 : 54, Math.min(matrixDrag.axis === "column" ? 600 : 400, matrixDrag.size + delta)));
+  if (matrixDrag.axis === "column") matrixDrag.element.style.width = `${size}px`;
+  else matrixDrag.element.style.height = `${size}px`;
+});
+document.addEventListener("pointerup", async () => {
+  if (!matrixDrag) return;
+  const { axis, key, element } = matrixDrag;
+  const size = Math.round(axis === "column" ? element.getBoundingClientRect().width : element.getBoundingClientRect().height);
+  matrixDrag = null;
+  if (!data.matrixLayout || typeof data.matrixLayout !== "object") data.matrixLayout = { columns: {}, rows: {} };
+  const bucket = axis === "column" ? "columns" : "rows";
+  data.matrixLayout[bucket] ||= {};
+  data.matrixLayout[bucket][key] = size;
+  await saveMatrixLayout();
+});
 byId("login-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(loginError, "");
   const formElement = event.currentTarget; const form = new FormData(formElement);
@@ -281,7 +426,13 @@ byId("wish-form").addEventListener("submit", async (event) => {
   finally { setBusy(false); }
 });
 byId("wish-grid").addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-delete-wish], [data-archive-wish], [data-restore-wish]"); if (!button) return;
+  const button = event.target.closest("[data-delete-wish], [data-archive-wish], [data-restore-wish], [data-claim-wish]"); if (!button) return;
+  if (button.dataset.claimWish) {
+    const action = button.dataset.unclaimWish ? "unclaim" : "claim";
+    try { await api(`/api/wishes/${encodeURIComponent(button.dataset.claimWish)}/${action}`, { method: "POST", body: "{}" }); await load(); }
+    catch (error) { message(appError, error.message); }
+    return;
+  }
   if (button.dataset.deleteWish && !confirm(showArchivedWishes ? "Удалить желание навсегда? Восстановить его будет нельзя." : "Удалить желание навсегда? Его нельзя будет восстановить.")) return;
   try {
     let notice = "";

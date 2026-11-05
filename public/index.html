@@ -35,14 +35,14 @@
     </header>
     <div class="app-content">
       <section class="hero-panel" id="home">
-        <div class="hero-copy"><p class="eyebrow">НОВОГОДНЯЯ ПОЧТА · 2026</p><h1>Желания любят,<br><em>когда их записывают.</em></h1><p>Ваш тихий уголок для новогодних мечтаний. Добавьте то, что порадует, а близкие помогут выбрать.</p></div>
-        <div class="hero-ornament" aria-hidden="true"><span>✳</span><b>❄</b><i>✦</i></div>
-        <div class="hero-foot"><span>✧ Списки видны только с разрешения владельца</span><span>С любовью, декабрь</span></div>
+        <div class="hero-copy"><p class="eyebrow">НОВОГОДНЯЯ ПОЧТА · 2026</p><h1>Желания любят,<br><em>когда их записывают.</em></h1><p>Пусть в этом году сбудется что-то особенное. Запишите желание — близкие помогут превратить его в подарок.</p></div>
+        <img class="hero-art" src="/winter-scene.svg" alt="Новогодняя ёлка, подарки и почтовый ящик со письмом" aria-hidden="true">
+        <div class="hero-foot"><span>❄ Списки видны только с разрешения владельца</span><span>Пусть случится чудо ✨</span></div>
       </section>
       <div id="app-error" class="alert error" role="alert" hidden></div>
       <div id="app-notice" class="alert success" role="status" hidden></div>
       <div class="workspace">
-        <aside class="sidebar"><p class="section-kicker">МОЯ ПОЧТА</p><button class="nav-item active" data-tab="list"><span>♡</span> Списки желаний</button><button id="access-tab" class="nav-item" data-tab="access" hidden><span>⌘</span> Участники и доступ</button><button id="audit-tab" class="nav-item" data-tab="audit" hidden><span>◷</span> Журнал действий</button><div class="side-note"><span>✧</span><p>Секретное желание? Личный список виден только вам, пока вы не откроете доступ.</p></div></aside>
+        <aside class="sidebar"><p class="section-kicker">МОЯ ПОЧТА</p><button class="nav-item active" data-tab="list"><span>♡</span> Списки желаний</button><button id="feedback-tab" class="nav-item" data-tab="feedback"><span>✎</span> Идеи и отзывы</button><button id="access-tab" class="nav-item" data-tab="access" hidden><span>⌘</span> Участники и доступ</button><button id="audit-tab" class="nav-item" data-tab="audit" hidden><span>◷</span> Журнал действий</button><div class="side-note"><span>✧</span><p>Секретное желание? Личный список виден только вам, пока вы не откроете доступ.</p></div></aside>
         <section class="main-panel">
           <section id="list-panel">
             <div class="panel-heading"><div><p class="section-kicker">ВАШ КРУГ</p><h2>Списки желаний</h2><p id="circle-hint" class="muted"></p></div><button id="add-wish-toggle" class="button primary">＋ Добавить желание</button></div>
@@ -59,10 +59,27 @@
             <form id="suggest-form" class="suggest-form" hidden><div><p class="section-kicker">ИДЕЯ ДЛЯ ПОДАРКА</p><h3>Подсказать что-нибудь?</h3><p class="muted">Идею увидят владелец списка и организатор.</p></div><textarea name="text" maxlength="500" placeholder="Напишите идею или ссылку…" required></textarea><button class="button secondary" type="submit">Отправить идею</button></form>
             <section id="suggestions" class="suggestions" hidden><p class="section-kicker">ИДЕИ ОТ БЛИЗКИХ</p><h3>Вам подсказали</h3><div id="suggestion-list"></div></section>
           </section>
+          <section id="feedback-panel" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">ТЁПЛЫЕ ИДЕИ</p><h2>Идеи и отзывы</h2><p class="muted">Оставьте комментарий или предложите, как сделать сайт удобнее. Записи видны всем участникам.</p></div></div>
+            <form id="feedback-form" class="feedback-form">
+              <div class="feedback-form-heading"><span class="feedback-sparkle">✦</span><div><strong>Поделитесь мыслью</strong><p>Небольшое предложение может сделать нашу новогоднюю почту ещё лучше.</p></div></div>
+              <div class="feedback-fields"><label>Тип записи<select name="kind"><option value="comment">Комментарий</option><option value="suggestion">Предложение по улучшению</option></select></label><label>Короткий заголовок <span>(необязательно)</span><input name="title" maxlength="120" placeholder="Например, удобнее на телефоне"></label></div>
+              <label>Текст<textarea name="text" maxlength="2000" placeholder="Что вам нравится или что можно улучшить?" required></textarea></label>
+              <button class="button primary" type="submit">Опубликовать</button>
+            </form>
+            <div class="feedback-toolbar"><div><h3>Общие записи</h3><p id="feedback-summary" class="muted"></p></div><button id="feedback-archive-toggle" class="wish-view-button" type="button">Мой архив</button></div>
+            <form id="feedback-filters" class="feedback-filters">
+              <label>Поиск<input name="q" type="search" placeholder="По тексту, заголовку или автору"></label>
+              <label>Тип<select name="kind"><option value="all">Все записи</option><option value="comment">Комментарии</option><option value="suggestion">Предложения</option></select></label>
+              <label>Сортировка<select name="order"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option></select></label>
+              <button class="button secondary" type="submit">Показать</button>
+            </form>
+            <div id="feedback-list" class="feedback-list" aria-live="polite"></div>
+          </section>
           <section id="access-panel" hidden>
-            <div class="panel-heading"><div><p class="section-kicker">НАСТРОЙКИ ПРОСТРАНСТВА</p><h2>Участники и доступ</h2><p class="muted">Создайте аккаунты и настройте права для каждой пары.</p></div><button id="add-member-toggle" class="button primary">＋ Добавить участника</button></div>
+            <div class="panel-heading"><div><p class="section-kicker">НАСТРОЙКИ ПРОСТРАНСТВА</p><h2>Участники и доступ</h2><p class="muted">Создайте аккаунты и настройте права для каждой пары.</p></div><div class="heading-actions"><button id="matrix-reset" class="button secondary" type="button">Вернуть исходный вид</button><button id="add-member-toggle" class="button primary">＋ Добавить участника</button></div></div>
             <form id="member-form" class="inline-form member-form" hidden><label>Имя<input name="name" placeholder="Например, Маша" required maxlength="80"></label><label>Логин<input name="username" placeholder="masha" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9._-]+" autocomplete="off"></label><label>Пароль<input name="password" type="password" placeholder="Не менее 12 символов" required minlength="12" maxlength="256" autocomplete="new-password"></label><button class="button primary" type="submit">Создать аккаунт</button></form>
-            <div id="matrix-wrap" class="table-wrap"></div><p class="table-hint">Переключатели у участника и списка меняют право «Видеть» сразу для всей строки или столбца. «Предложить» доступно только вместе с правом просмотра. Свой список участник видит автоматически.</p>
+            <div id="matrix-wrap" class="table-wrap"></div><p class="table-hint">Переключатели у участника и списка меняют право «Видеть» сразу для всей строки или столбца. Потяните за пунктирные края заголовков, чтобы изменить ширину столбцов или высоту строк; размеры сохраняются для организатора. «Предложить» доступно только вместе с правом просмотра. Свой список участник видит автоматически.</p>
             <section class="member-management"><div class="panel-heading"><div><p class="section-kicker">УЧЁТНЫЕ ЗАПИСИ</p><h2>Управление участниками</h2><p class="muted">Здесь можно задать новый пароль или удалить аккаунт.</p></div></div><div id="member-management-list" class="member-management-list"></div></section>
           </section>
           <section id="audit-panel" hidden>
