@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 380" role="img" aria-labelledby="title desc">
+<title id="title">Красная Огненная Коза в сказочном лубочном стиле</title><desc id="desc">Нарядная коза с огненной гривой, ёлкой и крупными народными звёздами.</desc>
+<rect width="600" height="380" rx="24" fill="#f7e9bd"/><rect x="12" y="12" width="576" height="356" rx="20" fill="#174d91" stroke="#a92e35" stroke-width="10"/><rect x="28" y="28" width="544" height="324" rx="15" fill="#f4d77c" stroke="#f9edcf" stroke-width="5"/>
+<path d="M36 75c80-40 140-36 217 0s142 37 224 0 73-25 87-20v80c-66 22-125 14-188-14-70-30-132-23-195 5-56 24-104 25-145 13z" fill="#2b69aa"/><path d="M34 269c80-33 149-26 219 1s142 24 214-7c42-18 75-20 99-14v82H34z" fill="#e5593f"/>
+<g fill="#fff0c5" stroke="#172d49" stroke-width="3"><path d="m104 83 10 22 24 2-18 15 6 23-22-13-21 13 6-23-18-15 24-2z"/><path d="m495 92 8 18 20 2-15 13 5 20-18-11-18 11 5-20-15-13 20-2z"/><path d="m515 237 7 16 18 1-14 11 4 17-15-9-15 9 4-17-14-11 18-1z"/></g><g fill="#e6b247"><circle cx="169" cy="65" r="6"/><circle cx="448" cy="60" r="5"/><circle cx="83" cy="222" r="5"/><circle cx="467" cy="305" r="6"/></g>
+<!-- ornamented New Year tree -->
+<g stroke="#173a4e" stroke-width="4" stroke-linejoin="round"><path d="m128 264 36-69 23 33 17-30 40 66z" fill="#147a57"/><path d="M183 262v35" stroke="#744128" stroke-width="10"/><path d="m182 184 8 15h-16z" fill="#e54a3d"/></g><g fill="#f9c94f" stroke="#6c3d32" stroke-width="2"><circle cx="160" cy="240" r="7"/><circle cx="192" cy="243" r="7"/><circle cx="177" cy="218" r="7"/></g>
+<g stroke="#152f4d" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+ <path d="M271 230c-5 28-2 48 5 70l17 1c8-25 10-45 8-64m73-7c8 25 7 45 4 70l18 2c11-32 13-54 8-80m-87 2c-4 29-2 52 1 78h18c7-28 9-53 5-75" fill="#fff4d9"/>
+ <path d="M238 204c17-41 62-61 120-51 54 9 87 43 82 80-5 37-43 57-100 51-64-6-105-31-102-80z" fill="#fff2d1"/>
+ <path d="M369 190c30-19 50-47 77-52 26-5 44 10 41 32-2 17-16 32-35 38l-36-1-23 35-27-9 17-43" fill="#f8e1b0"/>
+ <path d="M479 158c18-8 34-5 48 8l9 10-18 15-36-4-15-17z" fill="#f2bd73"/><circle cx="502" cy="166" r="4" fill="#1d2b42" stroke="none"/><path d="M480 190c-4 14 0 26 10 36 9-10 10-20 7-30" fill="#df4b39"/>
+ <path d="M452 144c-8-36-20-54-38-57 17-12 38 0 48 29 6-22 21-32 40-25-18 9-25 24-23 48" fill="none" stroke="#e5b247" stroke-width="11"/><path d="M467 145c-17-22-16-43 1-60-3 17 9 25 9 39 15-17 31-20 44-14-15 9-18 20-16 32 12-6 22-3 30 4-14 1-22 9-23 19-10-10-23-16-45-20z" fill="#d83837" stroke="#7c2830" stroke-width="4"/>
+ <path d="M250 204c-22-18-31-34-26-52 17 13 26 27 29 44m35 113h20m87 1h21m-93 0h20m47 1h21" fill="none" stroke="#172f4c" stroke-width="6"/>
+</g>
+<g fill="none" stroke="#b9313c" stroke-width="4"><path d="M75 170c24-20 46-20 68 0-22 20-44 20-68 0zm377-106c18 17 18 35 0 52-18-17-18-35 0-52z"/></g>
+<g fill="#fff2c8" font-family="serif" font-weight="700"><text x="53" y="332" font-size="15">СНЕГ И ЧУДЕСА</text><text x="420" y="332" font-size="15">2027</text></g>
+</svg>

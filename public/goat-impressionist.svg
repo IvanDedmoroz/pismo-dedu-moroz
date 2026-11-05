@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 380" role="img" aria-labelledby="title desc">
+<title id="title">Красная Огненная Коза в стиле импрессионистов</title><desc id="desc">Коза в снежном вечернем саду, написанном свободными праздничными мазками.</desc>
+<defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#4d7892"/><stop offset=".58" stop-color="#b0a8a0"/><stop offset="1" stop-color="#e9d7b0"/></linearGradient><linearGradient id="wool" x2="0" y2="1"><stop stop-color="#fff4d7"/><stop offset="1" stop-color="#c9d8d0"/></linearGradient><linearGradient id="scarf" x2="1" y2="1"><stop stop-color="#e85a3d"/><stop offset="1" stop-color="#a9253b"/></linearGradient><filter id="soft"><feGaussianBlur stdDeviation=".5"/></filter></defs>
+<rect width="600" height="380" rx="24" fill="url(#sky)"/><path d="M0 270c77-35 142-25 212 3s133 20 203-9 119-28 185-4v120H0z" fill="#e7dfd0"/><path d="M0 314c116-31 174-5 272 10s192-42 328-10v66H0z" fill="#c9d8d7"/>
+<g opacity=".78"><circle cx="87" cy="73" r="39" fill="#f7c979"/><circle cx="87" cy="73" r="56" fill="#f7c979" opacity=".16"/><path d="M38 63c23-9 35-4 51 6m-5-27c17 7 26 18 29 36" fill="none" stroke="#f5d99a" stroke-width="7" stroke-linecap="round"/><circle cx="487" cy="64" r="6" fill="#ffdc87"/><circle cx="523" cy="102" r="4" fill="#fff1cc"/><circle cx="450" cy="123" r="5" fill="#f8d685"/><circle cx="402" cy="69" r="3" fill="#fff3d5"/></g>
+<g fill="none" stroke-linecap="round" opacity=".8"><path d="M23 205c46-28 84-23 112-2" stroke="#f4d9b6" stroke-width="9"/><path d="M431 202c33-30 77-32 121-17" stroke="#a8c2bd" stroke-width="11"/><path d="M63 290c58-16 95-10 130 4m211 28c50-15 99-13 144 1" stroke="#fff4d5" stroke-width="8"/><path d="M161 89c22 10 43 28 50 47m157-80c-20 22-23 42-21 56" stroke="#82a7b0" stroke-width="7"/></g>
+<g stroke="#43545a" stroke-linecap="round" stroke-linejoin="round" stroke-width="4">
+ <path d="M181 229c-5 32-2 52 5 74l17 1c8-29 10-47 8-65m77-9c7 27 8 47 4 72l18 2c12-32 15-56 8-83m-81 4c-4 27-3 53 0 78l17 1c7-31 8-57 4-80" fill="url(#wool)"/>
+ <path d="M151 203c18-39 63-59 120-49 53 9 89 45 83 82-5 34-44 54-98 49-68-7-107-35-105-82z" fill="url(#wool)"/>
+ <path d="M289 190c34-19 52-48 81-54 27-5 45 11 42 34-2 18-15 30-35 38l-35-1-24 36-25-9 19-44" fill="#e6e3d0"/>
+ <path d="M400 159c19-8 37-5 51 8l8 9-18 14-37-4-16-16z" fill="#efd2af"/><circle cx="425" cy="165" r="3.5" fill="#27343a" stroke="none"/><path d="M400 188c-4 15 0 28 10 38 9-11 10-20 7-30" fill="#f9e8c8"/>
+ <path d="M374 143c-8-36-20-54-38-57 17-12 38 0 48 29 6-21 21-32 40-25-18 9-25 24-23 48" fill="none" stroke="#d5caa9" stroke-width="9"/><path d="M389 146c-19-24-17-45 1-62-4 18 10 27 9 41 15-18 32-21 46-15-16 9-18 21-16 33 12-6 23-4 31 3-14 1-23 10-24 21-10-10-24-16-47-21z" fill="url(#scarf)" stroke="#a94342" stroke-width="3"/>
+ <path d="M164 201c-25-18-32-34-28-51 16 12 27 27 30 42" fill="none"/><path d="M196 307h18m91 1h21m-97 0h20m50 1h21" stroke="#526267" stroke-width="6"/>
+</g>
+<g fill="none" stroke-linecap="round" opacity=".9"><path d="M190 207c24-18 53-21 77-12m-84 30c25-14 53-12 74-2m22 35c23 6 42 5 63-2" stroke="#b9c9c2" stroke-width="6"/><path d="M367 147c12 4 22 12 30 24m-190 94c-3 13-2 24 2 35m73-25c-1 12-1 23 1 34" stroke="#fff7df" stroke-width="4"/></g>
+<g fill="#fff8e6" opacity=".85"><circle cx="148" cy="125" r="3"/><circle cx="288" cy="76" r="2.5"/><circle cx="352" cy="103" r="3"/><circle cx="524" cy="178" r="2"/><circle cx="106" cy="236" r="2.5"/><circle cx="463" cy="270" r="3"/></g>
+</svg>

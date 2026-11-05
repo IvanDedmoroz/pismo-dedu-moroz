@@ -3,6 +3,7 @@ const appView = document.querySelector("#app-view");
 const loginError = document.querySelector("#login-error");
 const appError = document.querySelector("#app-error");
 const appNotice = document.querySelector("#app-notice");
+const themeNames = { renaissance: "Леонардо да Винчи", impressionist: "Импрессионисты", lubok: "Сказочный лубок", moscow: "Новый год в Москве" };
 let data = null;
 let selectedId = "";
 let showArchivedWishes = false;
@@ -23,6 +24,32 @@ const node = (tag, className = "", text = "") => {
 function message(target, text) { target.textContent = text; target.hidden = !text; }
 function showLogin(error = "") { loginView.hidden = false; appView.hidden = true; message(loginError, error); }
 function showApp() { loginView.hidden = true; appView.hidden = false; message(loginError, ""); }
+function applyTheme(theme) {
+  if (!themeNames[theme]) theme = "moscow";
+  document.body.dataset.theme = theme;
+  const art = byId("hero-art");
+  if (art) { art.src = `/goat-${theme}.svg`; art.alt = `Красная Огненная Коза — тема «${themeNames[theme]}»`; }
+  const loginArt = byId("login-goat");
+  if (loginArt) loginArt.src = `/goat-${theme}.svg`;
+}
+function renderThemeSettings() {
+  if (!data?.current.isAdmin || !data.theme) return;
+  document.querySelectorAll("[data-theme-mode]").forEach((button) => {
+    const selected = button.dataset.themeMode === data.theme.mode;
+    button.classList.toggle("active", selected); button.setAttribute("aria-pressed", String(selected));
+  });
+  document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+    const selected = button.dataset.themeChoice === data.theme.theme;
+    button.classList.toggle("selected", selected); button.setAttribute("aria-pressed", String(selected));
+  });
+  byId("theme-status").textContent = data.theme.mode === "daily"
+    ? `Автоматический режим: оформление меняется раз в сутки по московскому времени. Сегодня — «${themeNames[data.theme.theme]}».`
+    : `Сейчас выбрана тема «${themeNames[data.theme.theme]}». Она будет общей для всех участников.`;
+}
+async function saveTheme(mode, theme = data?.theme?.theme) {
+  const result = await api("/api/theme", { method: "POST", body: JSON.stringify({ mode, theme }) });
+  data.theme = result.theme; applyTheme(result.theme.theme); renderThemeSettings();
+}
 function setBusy(value) { busy = value; document.querySelectorAll("button[type=submit]").forEach((b) => b.disabled = value); }
 async function api(path, options = {}) {
   const response = await fetch(path, { cache: "no-store", ...options, headers: { ...(options.body ? { "content-type": "application/json" } : {}), ...(options.headers || {}) } });
@@ -34,6 +61,7 @@ async function api(path, options = {}) {
 async function load() {
   try {
     data = await api("/api/data");
+    applyTheme(data.theme?.theme);
     if (!selectedId || !data.members.some((m) => m.id === selectedId)) selectedId = data.current.id;
     if (!visitLogged) {
       visitLogged = true;
@@ -61,7 +89,7 @@ function render() {
   byId("feedback-panel").hidden = currentTab !== "feedback";
   byId("access-panel").hidden = currentTab !== "access" || !data.current.isAdmin;
   byId("audit-panel").hidden = currentTab !== "audit" || !data.current.isAdmin;
-  if (currentTab === "access" && data.current.isAdmin) renderMatrix();
+  if (currentTab === "access" && data.current.isAdmin) { renderMatrix(); renderThemeSettings(); }
   else if (currentTab === "audit" && data.current.isAdmin) loadAudit();
   else if (currentTab === "list") renderWishlist();
   else if (currentTab === "feedback") loadFeedback();
@@ -231,7 +259,7 @@ const auditEventNames = {
   site_visit: "Посещение сайта", login_success: "Успешный вход", login_failed: "Неудачный вход", login_blocked: "Заблокированная попытка",
   logout: "Выход", member_created: "Создание участника", password_changed: "Смена пароля", member_deleted: "Удаление участника",
   access_changed: "Изменение прав", access_bulk_changed: "Массовое изменение прав", wish_added: "Добавление желания",
-  wish_archived: "Желание в архиве", wish_restored: "Желание восстановлено", wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка",
+  wish_archived: "Желание в архиве", wish_restored: "Желание восстановлено", wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка", theme_changed: "Смена оформления",
   feedback_added: "Комментарий или предложение", feedback_archived: "Запись в архиве", feedback_restored: "Запись восстановлена",
   gift_claim_added: "Готовность сделать подарок", gift_claim_removed: "Отметка о подарке снята",
 };
@@ -500,4 +528,27 @@ byId("suggest-form").addEventListener("submit", async (event) => {
   finally { setBusy(false); }
 });
 
+document.querySelectorAll("[data-theme-mode]").forEach((button) => button.addEventListener("click", async () => {
+  if (!data?.current.isAdmin) return;
+  try { await saveTheme(button.dataset.themeMode); message(appNotice, button.dataset.themeMode === "daily" ? "Включена ежедневная случайная смена темы." : "Включён ручной выбор темы."); }
+  catch (error) { message(appError, error.message); }
+}));
+document.querySelectorAll("[data-theme-choice]").forEach((button) => button.addEventListener("click", async () => {
+  if (!data?.current.isAdmin) return;
+  try { await saveTheme("manual", button.dataset.themeChoice); message(appNotice, `Выбрана тема «${themeNames[button.dataset.themeChoice]}».`); }
+  catch (error) { message(appError, error.message); }
+}));
+
+setInterval(async () => {
+  if (!data || data.theme?.mode !== "daily") return;
+  try {
+    const result = await api("/api/theme");
+    if (result.theme.theme !== data.theme.theme || result.theme.date !== data.theme.date) {
+      data.theme = result.theme; applyTheme(result.theme.theme);
+      if (data.current.isAdmin) renderThemeSettings();
+    }
+  } catch {}
+}, 5 * 60 * 1000);
+
+api("/api/theme").then((result) => applyTheme(result.theme?.theme)).catch(() => {});
 load();
