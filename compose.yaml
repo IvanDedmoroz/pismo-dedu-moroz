@@ -1,0 +1,13 @@
+services:
+  pismo-dedu-moroz:
+    build: .
+    container_name: pismo-dedu-moroz
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "3000"
+      DATA_DIR: /app/data
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/app/data
