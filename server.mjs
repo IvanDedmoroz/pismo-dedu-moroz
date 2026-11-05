@@ -65,6 +65,26 @@ db.exec(`
     body TEXT NOT NULL,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS feedback (
+    id TEXT PRIMARY KEY,
+    author_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('comment','suggestion')),
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    archived_at TEXT
+  );
+  CREATE TABLE IF NOT EXISTS gift_claims (
+    wish_id TEXT NOT NULL REFERENCES wishes(id) ON DELETE CASCADE,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (wish_id, member_id)
+  );
+  CREATE TABLE IF NOT EXISTS matrix_preferences (
+    member_id TEXT PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+    layout TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -80,6 +100,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS sessions_member_idx ON sessions(member_id);
   CREATE INDEX IF NOT EXISTS wishes_owner_created_idx ON wishes(owner_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS suggestions_owner_created_idx ON suggestions(owner_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback(created_at DESC);
+  CREATE INDEX IF NOT EXISTS feedback_author_created_idx ON feedback(author_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS gift_claims_member_idx ON gift_claims(member_id, wish_id);
   CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS audit_logs_username_idx ON audit_logs(username, created_at DESC);
 `);
@@ -198,14 +221,28 @@ function bootstrap(member) {
     : db.prepare("SELECT owner_id,viewer_id,can_view,can_suggest FROM access_rules WHERE viewer_id=? OR owner_id=?").all(member.id, member.id);
   const wishes = db.prepare(`SELECT w.id,w.owner_id AS ownerId,w.title,w.url,w.note,w.created_at AS createdAt,m.name AS ownerName
     FROM wishes w JOIN members m ON m.id=w.owner_id
-    WHERE w.archived_at IS NULL AND (w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1))
-    ORDER BY w.created_at DESC`).all(member.id, member.id);
+    WHERE w.archived_at IS NULL AND (?=1 OR w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1))
+    ORDER BY w.created_at DESC`).all(Number(!!member.is_admin), member.id, member.id);
   const archivedWishes = db.prepare(`SELECT id,owner_id AS ownerId,title,url,note,created_at AS createdAt
     FROM wishes WHERE owner_id=? AND archived_at IS NOT NULL ORDER BY archived_at DESC`).all(member.id);
   const suggestions = db.prepare(`SELECT s.id,s.owner_id AS ownerId,s.author_id AS authorId,s.body,s.created_at AS createdAt,
     a.name AS authorName,o.name AS ownerName FROM suggestions s JOIN members a ON a.id=s.author_id JOIN members o ON o.id=s.owner_id
     WHERE s.owner_id=? OR s.author_id=? ORDER BY s.created_at DESC`).all(member.id, member.id);
-  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, archivedWishes, suggestions };
+  const claimRows = db.prepare(`SELECT c.wish_id AS wishId,c.member_id AS memberId,m.name,m.username
+    FROM gift_claims c JOIN wishes w ON w.id=c.wish_id JOIN members m ON m.id=c.member_id
+    WHERE w.archived_at IS NULL AND (?=1 OR w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1))
+    ORDER BY c.created_at`).all(Number(!!member.is_admin), member.id, member.id);
+  const giftClaims = new Map();
+  for (const row of claimRows) {
+    if (!giftClaims.has(row.wishId)) giftClaims.set(row.wishId, { wishId: row.wishId, count: 0, claimedByMe: false, people: [] });
+    const claim = giftClaims.get(row.wishId); claim.count++;
+    if (row.memberId === member.id) claim.claimedByMe = true;
+    if (member.is_admin) claim.people.push({ id: row.memberId, name: row.name, username: row.username });
+  }
+  const matrixLayout = member.is_admin
+    ? (db.prepare("SELECT layout FROM matrix_preferences WHERE member_id=?").get(member.id)?.layout || "{}")
+    : "{}";
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout) };
 }
 
 const server = createServer(async (req, res) => {
@@ -239,6 +276,26 @@ const server = createServer(async (req, res) => {
         target_username AS targetUsername,target_name AS targetName,ip,user_agent AS userAgent,details
         FROM audit_logs ${where} ORDER BY created_at ${order},id ${order} LIMIT 100 OFFSET ?`).all(...params, (page - 1) * 100);
       send(res, 200, { rows: rows.map((row) => ({ ...row, details: JSON.parse(row.details || "{}") })), total, page, pages: Math.max(1, Math.ceil(total / 100)), ipSource: process.env.TRUST_PROXY === "1" ? "proxy" : "direct" });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/feedback") {
+      const member = needMember(req, res); if (!member) return;
+      const q = String(url.searchParams.get("q") || "").trim().slice(0, 120);
+      const kind = String(url.searchParams.get("kind") || "all");
+      const archived = url.searchParams.get("archived") === "1";
+      const order = url.searchParams.get("order") === "oldest" ? "ASC" : "DESC";
+      const filters = [];
+      const params = [];
+      if (member.is_admin) filters.push(archived ? "f.archived_at IS NOT NULL" : "f.archived_at IS NULL");
+      else if (archived) { filters.push("f.archived_at IS NOT NULL AND f.author_id=?"); params.push(member.id); }
+      else filters.push("f.archived_at IS NULL");
+      if (["comment", "suggestion"].includes(kind)) { filters.push("f.kind=?"); params.push(kind); }
+      if (q) { filters.push("(f.title LIKE ? OR f.body LIKE ? OR m.name LIKE ? OR m.username LIKE ?)"); const pattern = `%${q}%`; params.push(pattern, pattern, pattern, pattern); }
+      const rows = db.prepare(`SELECT f.id,f.author_id AS authorId,f.kind,f.title,f.body,f.created_at AS createdAt,
+        f.archived_at AS archivedAt,m.name AS authorName,m.username AS authorUsername
+        FROM feedback f JOIN members m ON m.id=f.author_id WHERE ${filters.join(" AND ")}
+        ORDER BY f.created_at ${order},f.id ${order} LIMIT 1000`).all(...params);
+      send(res, 200, { rows, total: rows.length });
       return;
     }
     if (req.method === "POST" && !needSameOrigin(req, res)) return;
@@ -355,6 +412,37 @@ const server = createServer(async (req, res) => {
       send(res, 201, { ok: true });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/feedback") {
+      const member = needMember(req, res); if (!member) return;
+      const body = await readBody(req);
+      const kind = String(body.kind || "");
+      const title = String(body.title || "").trim().slice(0, 120);
+      const text = String(body.text || "").trim().slice(0, 2000);
+      if (!["comment", "suggestion"].includes(kind)) return fail(res, "Выберите тип записи.");
+      if (!text) return fail(res, "Напишите комментарий или предложение.");
+      if (String(body.text || "").length > 2000) return fail(res, "Текст должен быть не длиннее 2000 символов.");
+      const id = randomBytes(16).toString("hex");
+      const createdAt = new Date().toISOString();
+      db.prepare("INSERT INTO feedback (id,author_id,kind,title,body,created_at) VALUES (?,?,?,?,?,?)")
+        .run(id, member.id, kind, title, text, createdAt);
+      audit(req, "feedback_added", member, { details: { kind, title } });
+      send(res, 201, { ok: true, id });
+      return;
+    }
+    const feedbackStateMatch = url.pathname.match(/^\/api\/feedback\/([^/]+)\/(archive|restore)$/);
+    if (req.method === "POST" && feedbackStateMatch) {
+      const member = needMember(req, res); if (!member || !needSameOrigin(req, res)) return;
+      const id = decodeURIComponent(feedbackStateMatch[1]);
+      const action = feedbackStateMatch[2];
+      const entry = db.prepare("SELECT id,author_id AS authorId,kind,title FROM feedback WHERE id=?").get(id);
+      if (!entry) return fail(res, "Запись не найдена.", 404);
+      if (!member.is_admin && entry.authorId !== member.id) return fail(res, "Можно перемещать в архив только свои записи.", 403);
+      const archivedAt = action === "archive" ? new Date().toISOString() : null;
+      db.prepare("UPDATE feedback SET archived_at=? WHERE id=?").run(archivedAt, id);
+      audit(req, action === "archive" ? "feedback_archived" : "feedback_restored", member, { details: { kind: entry.kind, title: entry.title } });
+      send(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "DELETE" && url.pathname.startsWith("/api/wishes/")) {
       const member = needMember(req, res); if (!member || !needSameOrigin(req, res)) return;
       const id = decodeURIComponent(url.pathname.slice("/api/wishes/".length));
@@ -377,6 +465,26 @@ const server = createServer(async (req, res) => {
       } else {
         db.prepare("UPDATE wishes SET archived_at=NULL WHERE id=? AND owner_id=?").run(id, member.id);
         audit(req, "wish_restored", member, { details: { title: wish.title } });
+      }
+      send(res, 200, { ok: true });
+      return;
+    }
+    const giftClaimMatch = url.pathname.match(/^\/api\/wishes\/([^/]+)\/(claim|unclaim)$/);
+    if (req.method === "POST" && giftClaimMatch) {
+      const member = needMember(req, res); if (!member || !needSameOrigin(req, res)) return;
+      const id = decodeURIComponent(giftClaimMatch[1]);
+      const action = giftClaimMatch[2];
+      const wish = db.prepare("SELECT w.id,w.owner_id AS ownerId,w.title,w.archived_at AS archivedAt,m.name AS ownerName,m.username AS ownerUsername FROM wishes w JOIN members m ON m.id=w.owner_id WHERE w.id=?").get(id);
+      if (!wish || wish.archivedAt) return fail(res, "Это желание сейчас недоступно.", 404);
+      if (wish.ownerId === member.id) return fail(res, "Нельзя отметить готовность для собственного желания.", 400);
+      const canSee = member.is_admin || !!db.prepare("SELECT 1 FROM access_rules WHERE owner_id=? AND viewer_id=? AND can_view=1").get(wish.ownerId, member.id);
+      if (!canSee) return fail(res, "У вас нет доступа к этому желанию.", 403);
+      if (action === "claim") {
+        const result = db.prepare("INSERT OR IGNORE INTO gift_claims (wish_id,member_id,created_at) VALUES (?,?,?)").run(id, member.id, new Date().toISOString());
+        if (result.changes) audit(req, "gift_claim_added", member, { targetUsername: wish.ownerUsername, targetName: wish.ownerName, details: { title: wish.title } });
+      } else {
+        const result = db.prepare("DELETE FROM gift_claims WHERE wish_id=? AND member_id=?").run(id, member.id);
+        if (result.changes) audit(req, "gift_claim_removed", member, { targetUsername: wish.ownerUsername, targetName: wish.ownerName, details: { title: wish.title } });
       }
       send(res, 200, { ok: true });
       return;
@@ -447,6 +555,31 @@ const server = createServer(async (req, res) => {
         pairs: Array.from(pairs.values(), ({ ownerId, viewerId }) => ({ owner: memberInfo.get(ownerId)?.username, viewer: memberInfo.get(viewerId)?.username })),
       } });
       send(res, 200, { ok: true, updated: pairs.size });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/matrix-layout") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const body = await readBody(req);
+      const members = new Set(db.prepare("SELECT id FROM members").all().map((row) => row.id));
+      const validSizeMap = (value, min, max, allowLabel = false) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+        const result = {};
+        for (const [key, raw] of Object.entries(value)) {
+          if (!(allowLabel && key === "label") && !members.has(key)) return null;
+          if (!Number.isInteger(raw) || raw < min || raw > max) return null;
+          result[key] = raw;
+        }
+        return result;
+      };
+      const columns = validSizeMap(body.columns, 100, 600, true);
+      const rows = validSizeMap(body.rows, 54, 400);
+      if (!columns || !rows) return fail(res, "Некорректные размеры таблицы.");
+      const layout = JSON.stringify({ columns, rows });
+      if (layout.length > 16000) return fail(res, "Настройки таблицы слишком велики.");
+      db.prepare(`INSERT INTO matrix_preferences (member_id,layout,updated_at) VALUES (?,?,?)
+        ON CONFLICT(member_id) DO UPDATE SET layout=excluded.layout,updated_at=excluded.updated_at`)
+        .run(member.id, layout, new Date().toISOString());
+      send(res, 200, { ok: true });
       return;
     }
 
