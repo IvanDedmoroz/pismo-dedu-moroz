@@ -16,6 +16,7 @@ const sessionSeconds = 60 * 60 * 24 * 30;
 const passwordIterations = 310_000;
 const passwordBytes = 32;
 const loginFailures = new Map();
+const themeKeys = ["renaissance", "impressionist", "lubok", "moscow"];
 
 if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 16) {
   console.error("ADMIN_PASSWORD is missing or too short. Start the app with the supplied .env file.");
@@ -85,6 +86,10 @@ db.exec(`
     layout TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS app_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -106,6 +111,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS audit_logs_username_idx ON audit_logs(username, created_at DESC);
 `);
+
+db.prepare("INSERT OR IGNORE INTO app_settings (setting_key,setting_value) VALUES (?,?)").run("theme_mode", "manual");
+db.prepare("INSERT OR IGNORE INTO app_settings (setting_key,setting_value) VALUES (?,?)").run("theme_key", "moscow");
+db.prepare("INSERT OR IGNORE INTO app_settings (setting_key,setting_value) VALUES (?,?)").run("theme_date", "");
 
 // Add the archive marker to databases created by earlier versions.
 const wishColumns = db.prepare("PRAGMA table_info(wishes)").all();
@@ -209,6 +218,27 @@ function needAdmin(member, res) {
 }
 function fail(res, error, status = 400) { send(res, status, { error }); }
 function isValidUsername(value) { return /^[a-z0-9._-]{3,32}$/.test(value); }
+function moscowDate() {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const part = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${part.year}-${part.month}-${part.day}`;
+}
+function getThemeSettings() {
+  const read = db.prepare("SELECT setting_value FROM app_settings WHERE setting_key=?");
+  let mode = read.get("theme_mode")?.setting_value === "daily" ? "daily" : "manual";
+  let theme = read.get("theme_key")?.setting_value;
+  let date = read.get("theme_date")?.setting_value || "";
+  if (!themeKeys.includes(theme)) theme = "moscow";
+  if (mode === "daily" && date !== moscowDate()) {
+    const choices = themeKeys.filter((key) => key !== theme);
+    theme = choices[Math.floor(Math.random() * choices.length)];
+    date = moscowDate();
+    const save = db.prepare("UPDATE app_settings SET setting_value=? WHERE setting_key=?");
+    save.run(theme, "theme_key");
+    save.run(date, "theme_date");
+  }
+  return { mode, theme, date };
+}
 function memberListFor(member) {
   if (member.is_admin) return db.prepare("SELECT id,name,username,is_admin FROM members ORDER BY name COLLATE NOCASE").all();
   return db.prepare(`SELECT id,name,username,is_admin FROM members WHERE id=? OR id IN
@@ -242,7 +272,7 @@ function bootstrap(member) {
   const matrixLayout = member.is_admin
     ? (db.prepare("SELECT layout FROM matrix_preferences WHERE member_id=?").get(member.id)?.layout || "{}")
     : "{}";
-  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout) };
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings() };
 }
 
 const server = createServer(async (req, res) => {
@@ -251,6 +281,31 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/data") {
       const member = needMember(req, res);
       if (member) send(res, 200, bootstrap(member));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/theme") {
+      // The selected visual theme is public; only changing it requires an admin session.
+      send(res, 200, { theme: getThemeSettings() });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/theme") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      if (!needSameOrigin(req, res)) return;
+      const body = await readBody(req);
+      const mode = body.mode === "daily" ? "daily" : "manual";
+      let theme = themeKeys.includes(body.theme) ? body.theme : getThemeSettings().theme;
+      const today = moscowDate();
+      if (mode === "daily") {
+        const current = getThemeSettings().theme;
+        const choices = themeKeys.filter((key) => key !== current);
+        theme = choices[Math.floor(Math.random() * choices.length)];
+      }
+      const save = db.prepare("UPDATE app_settings SET setting_value=? WHERE setting_key=?");
+      save.run(mode, "theme_mode");
+      save.run(theme, "theme_key");
+      save.run(mode === "daily" ? today : "", "theme_date");
+      audit(req, "theme_changed", member, { details: { mode, theme } });
+      send(res, 200, { theme: getThemeSettings() });
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/audit-logs") {
