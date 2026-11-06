@@ -67,3 +67,10 @@ body[data-theme="moscow"] .nav-item.active{background:#dce8f1;color:#173c69}
 .theme-card strong,.theme-card small{display:block}.theme-card strong{font-size:11px}.theme-card small{margin-top:5px;color:var(--muted);font-size:9px;line-height:1.35}
 .theme-status{min-height:18px;margin:11px 2px 0;color:var(--muted);font-size:10px;line-height:1.5}
 @media(max-width:560px){.theme-mode-row{align-items:flex-start;flex-direction:column}.theme-mode-toggle{width:100%}.theme-mode-button{flex:1;padding:9px 7px}.theme-picker{grid-template-columns:1fr}.theme-card img{width:96px;height:64px}}
+
+/* User supplied greeting-card backgrounds for the sign-in screen. */
+.signin-shell{background-size:cover;background-position:center;background-repeat:no-repeat}
+body[data-theme="renaissance"] .signin-shell{background-image:linear-gradient(90deg,#27180d33,#27180d12),url("/background-renaissance.webp")}
+body[data-theme="impressionist"] .signin-shell{background-image:linear-gradient(90deg,#09283a33,#09283a12),url("/background-impressionist.webp")}
+body[data-theme="lubok"] .signin-shell{background-image:linear-gradient(90deg,#40130b22,#40130b08),url("/background-lubok.webp")}
+body[data-theme="moscow"] .signin-shell{background-image:linear-gradient(90deg,#07122d22,#07122d08),url("/background-moscow.webp")}

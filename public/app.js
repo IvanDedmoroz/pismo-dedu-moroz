@@ -29,8 +29,6 @@ function applyTheme(theme) {
   document.body.dataset.theme = theme;
   const art = byId("hero-art");
   if (art) { art.src = `/goat-${theme}.webp`; art.alt = `Красная Огненная Коза — тема «${themeNames[theme]}»`; }
-  const loginArt = byId("login-goat");
-  if (loginArt) loginArt.src = `/goat-${theme}.webp`;
 }
 function renderThemeSettings() {
   if (!data?.current.isAdmin || !data.theme) return;
