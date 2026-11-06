@@ -643,7 +643,7 @@ const server = createServer(async (req, res) => {
     const file = resolve(publicRoot, `.${relative}`);
     if (!file.startsWith(publicRoot + sep) && file !== resolve(publicRoot, "index.html")) { send(res, 404, { error: "Не найдено." }); return; }
     if (!existsSync(file) || !statSync(file).isFile()) { send(res, 404, { error: "Не найдено." }); return; }
-    const mime = ({ ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" })[extname(file)] || "application/octet-stream";
+    const mime = ({ ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".webp": "image/webp" })[extname(file)] || "application/octet-stream";
     res.writeHead(200, { "content-type": mime, "cache-control": "no-store", ...securityHeaders() });
     res.end(req.method === "HEAD" ? undefined : readFileSync(file));
   } catch (error) {
