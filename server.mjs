@@ -69,7 +69,8 @@ db.exec(`
     author_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     body TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    is_private INTEGER NOT NULL DEFAULT 0 CHECK (is_private IN (0,1))
+    is_private INTEGER NOT NULL DEFAULT 0 CHECK (is_private IN (0,1)),
+    is_anonymous INTEGER NOT NULL DEFAULT 0 CHECK (is_anonymous IN (0,1))
   );
   CREATE TABLE IF NOT EXISTS feedback (
     id TEXT PRIMARY KEY,
@@ -150,12 +151,17 @@ const suggestionColumns = db.prepare("PRAGMA table_info(suggestions)").all();
 if (!suggestionColumns.some((column) => column.name === "is_private")) {
   db.exec("ALTER TABLE suggestions ADD COLUMN is_private INTEGER NOT NULL DEFAULT 1 CHECK (is_private IN (0,1))");
 }
+if (!suggestionColumns.some((column) => column.name === "is_anonymous")) {
+  db.exec("ALTER TABLE suggestions ADD COLUMN is_anonymous INTEGER NOT NULL DEFAULT 0 CHECK (is_anonymous IN (0,1))");
+}
 db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
   .run("release-2026-11-07-avatars", "20 праздничных аватаров", "Теперь каждый участник может выбрать один из 20 зимних аватаров для своего профиля. Выбранная картинка отображается рядом с именем в списках участников.", "2026-11-07T09:00:00.000Z");
 db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
   .run("release-2026-11-07-updates", "Лента обновлений и реакции", "Появилась вкладка с новостями сайта. Поставьте 👍 или 👎, чтобы организатор видел, какие изменения вам понравились. Реакцию можно изменить в любой момент.", "2026-11-07T12:00:00.000Z");
 db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
   .run("release-2026-11-07-suggestion-privacy", "Общие и личные предложения подарков", "Предложения подарков теперь видны всем участникам по умолчанию. При отправке можно включить приватный режим: тогда предложение увидит только получатель и организатор.", "2026-11-07T15:00:00.000Z");
+db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
+  .run("release-2026-11-07-suggestion-anonymity", "Анонимные предложения подарков", "Теперь можно выбрать: показывать предложение всем с именем, показывать анонимно или оставить видимым только получателю и организатору. Организатор видит автора в любом режиме.", "2026-11-07T15:30:00.000Z");
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
@@ -298,9 +304,9 @@ function bootstrap(member) {
     ORDER BY w.created_at DESC`).all(Number(!!member.is_admin), member.id, member.id);
   const archivedWishes = db.prepare(`SELECT id,owner_id AS ownerId,title,url,note,created_at AS createdAt
     FROM wishes WHERE owner_id=? AND archived_at IS NOT NULL ORDER BY archived_at DESC`).all(member.id);
-  const suggestions = db.prepare(`SELECT s.id,s.owner_id AS ownerId,s.author_id AS authorId,s.body,s.is_private AS isPrivate,s.created_at AS createdAt,
-    a.name AS authorName,o.name AS ownerName FROM suggestions s JOIN members a ON a.id=s.author_id JOIN members o ON o.id=s.owner_id
-    WHERE (?=1 OR s.is_private=0 OR s.owner_id=?) ORDER BY s.created_at DESC`).all(Number(!!member.is_admin), member.id);
+  const suggestions = db.prepare(`SELECT s.id,s.owner_id AS ownerId,s.body,s.is_private AS isPrivate,s.is_anonymous AS isAnonymous,s.created_at AS createdAt,
+    CASE WHEN s.is_anonymous=1 AND ?=0 THEN NULL ELSE a.name END AS authorName,o.name AS ownerName FROM suggestions s JOIN members a ON a.id=s.author_id JOIN members o ON o.id=s.owner_id
+    WHERE (?=1 OR s.is_private=0 OR s.owner_id=?) ORDER BY s.created_at DESC`).all(Number(!!member.is_admin), Number(!!member.is_admin), member.id);
   const claimRows = db.prepare(`SELECT c.wish_id AS wishId,c.member_id AS memberId,m.name,m.username
     FROM gift_claims c JOIN wishes w ON w.id=c.wish_id JOIN members m ON m.id=c.member_id
     WHERE w.archived_at IS NULL AND (?=1 OR w.owner_id=? OR EXISTS(SELECT 1 FROM access_rules a WHERE a.owner_id=w.owner_id AND a.viewer_id=? AND a.can_view=1))
@@ -661,14 +667,18 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const ownerId = String(body.ownerId || "");
       const text = String(body.text || "").trim().slice(0, 500);
-      const isPrivate = body.isPrivate === true;
+      const visibility = ["public_named", "public_anonymous", "private"].includes(body.visibility)
+        ? body.visibility
+        : body.isPrivate === true ? "private" : "public_named";
+      const isPrivate = visibility === "private";
+      const isAnonymous = visibility === "public_anonymous";
       const grant = db.prepare("SELECT 1 FROM access_rules WHERE owner_id=? AND viewer_id=? AND can_view=1 AND can_suggest=1").get(ownerId, member.id);
       if (!grant) return fail(res, "Предложения для этого списка не разрешены.", 403);
       if (!text) return fail(res, "Напишите предложение.");
-      db.prepare("INSERT INTO suggestions (id,owner_id,author_id,body,created_at,is_private) VALUES (?,?,?,?,?,?)")
-        .run(randomBytes(16).toString("hex"), ownerId, member.id, text, new Date().toISOString(), Number(isPrivate));
+      db.prepare("INSERT INTO suggestions (id,owner_id,author_id,body,created_at,is_private,is_anonymous) VALUES (?,?,?,?,?,?,?)")
+        .run(randomBytes(16).toString("hex"), ownerId, member.id, text, new Date().toISOString(), Number(isPrivate), Number(isAnonymous));
       const owner = db.prepare("SELECT name,username FROM members WHERE id=?").get(ownerId);
-      audit(req, "suggestion_added", member, { targetUsername: owner?.username, targetName: owner?.name, details: { text, isPrivate } });
+      audit(req, "suggestion_added", member, { targetUsername: owner?.username, targetName: owner?.name, details: { text, visibility } });
       send(res, 201, { ok: true });
       return;
     }
