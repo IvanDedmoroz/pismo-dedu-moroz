@@ -98,11 +98,26 @@ function render() {
   byId("audit-panel").hidden = currentTab !== "audit" || !data.current.isAdmin;
   byId("updates-panel").hidden = currentTab !== "updates";
   byId("update-create-form").hidden = !data.current.isAdmin;
+  renderGiftSuggestions();
   if (currentTab === "access" && data.current.isAdmin) { renderMatrix(); renderThemeSettings(); }
   else if (currentTab === "audit" && data.current.isAdmin) loadAudit();
   else if (currentTab === "updates") renderUpdates();
   else if (currentTab === "list") renderWishlist();
   else if (currentTab === "feedback") loadFeedback();
+}
+function renderGiftSuggestions() {
+  const entries = byId("gift-suggestion-list"); if (!entries) return;
+  entries.replaceChildren();
+  const visible = data.suggestions.filter((item) => !item.isPrivate || data.current.isAdmin || item.ownerId === data.current.id);
+  byId("gift-suggestions-board").hidden = !visible.length;
+  visible.forEach((idea) => {
+    const card = node("article", "gift-suggestion-entry");
+    const header = node("div", "gift-suggestion-header");
+    header.append(node("strong", "", idea.ownerId === data.current.id ? "Для вас" : `Для ${idea.ownerName}`));
+    header.append(node("span", idea.isPrivate ? "suggestion-visibility private" : "suggestion-visibility", idea.isPrivate ? "🔒 Только получателю и организатору" : "Видно всем"));
+    card.append(header, node("p", "gift-suggestion-body", idea.body), node("small", "gift-suggestion-author", `Предложил(а): ${idea.authorName}`));
+    entries.append(card);
+  });
 }
 function renderUpdates() {
   const list = byId("updates-list"); list.replaceChildren();
@@ -198,7 +213,9 @@ function renderWishlist() {
   ideas.forEach((idea) => {
     const row = node("article", "suggestion");
     row.append(node("span", "avatar small", idea.authorName.slice(0, 1).toUpperCase()));
-    const text = node("div"); text.append(node("strong", "", idea.authorName), node("p", "", idea.body)); row.append(text, node("span", "suggestion-mark", "✦")); ideaList.append(row);
+    const text = node("div"); text.append(node("strong", "", idea.authorName), node("p", "", idea.body));
+    if (idea.isPrivate) text.append(node("small", "suggestion-visibility private", "🔒 Личное предложение"));
+    row.append(text, node("span", "suggestion-mark", "✦")); ideaList.append(row);
   });
 }
 function renderMatrix() {
@@ -598,8 +615,8 @@ byId("suggest-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
   const formElement = event.currentTarget; const form = new FormData(formElement);
   try {
-    await api("/api/suggestions", { method: "POST", body: JSON.stringify({ ownerId: selectedId, text: form.get("text") }) });
-    formElement.reset(); message(appNotice, "Идея отправлена.");
+    await api("/api/suggestions", { method: "POST", body: JSON.stringify({ ownerId: selectedId, text: form.get("text"), isPrivate: form.get("private") === "on" }) });
+    formElement.reset(); message(appNotice, "Идея отправлена."); await load();
   } catch (error) { message(appError, error.message); }
   finally { setBusy(false); }
 });
