@@ -31,7 +31,7 @@
   <main id="app-view" class="app-shell" hidden>
     <header class="topbar">
       <a class="wordmark" href="#home"><span class="mini-mark">✦</span> Письмо Деду Морозу</a>
-      <div class="top-actions"><span id="user-avatar" class="avatar"></span><span id="user-label" class="user-label"></span><button id="logout-button" class="quiet-link">Выйти</button></div>
+      <div class="top-actions"><button id="user-avatar" class="avatar avatar-trigger" type="button" aria-label="Выбрать аватар" title="Выбрать аватар"></button><span id="user-label" class="user-label"></span><button id="logout-button" class="quiet-link">Выйти</button></div>
     </header>
     <div class="app-content">
       <section class="hero-panel" id="home">
@@ -80,7 +80,9 @@
             <div class="panel-heading"><div><p class="section-kicker">НАСТРОЙКИ ПРОСТРАНСТВА</p><h2>Участники и доступ</h2><p class="muted">Создайте аккаунты и настройте права для каждой пары.</p></div><div class="heading-actions"><button id="matrix-reset" class="button secondary" type="button">Вернуть исходный вид</button><button id="add-member-toggle" class="button primary">＋ Добавить участника</button></div></div>
             <form id="member-form" class="inline-form member-form" hidden><label>Имя<input name="name" placeholder="Например, Маша" required maxlength="80"></label><label>Логин<input name="username" placeholder="masha" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9._-]+" autocomplete="off"></label><label>Пароль<input name="password" type="password" placeholder="Не менее 12 символов" required minlength="12" maxlength="256" autocomplete="new-password"></label><button class="button primary" type="submit">Создать аккаунт</button></form>
             <div id="matrix-wrap" class="table-wrap"></div><p class="table-hint">Переключатели у участника и списка меняют право «Видеть» сразу для всей строки или столбца. Потяните за пунктирные края заголовков, чтобы изменить ширину столбцов или высоту строк; размеры сохраняются для организатора. «Предложить» доступно только вместе с правом просмотра. Свой список участник видит автоматически.</p>
-            <section class="member-management"><div class="panel-heading"><div><p class="section-kicker">УЧЁТНЫЕ ЗАПИСИ</p><h2>Управление участниками</h2><p class="muted">Здесь можно задать новый пароль или удалить аккаунт.</p></div></div><div id="member-management-list" class="member-management-list"></div></section>
+            <section class="member-management"><div class="panel-heading"><div><p class="section-kicker">УЧЁТНЫЕ ЗАПИСИ</p><h2>Управление участниками</h2><p class="muted">Здесь можно задать новый пароль или удалить аккаунт.</p></div></div><div id="member-management-list" class="member-management-list"></div>
+              <div class="backup-control"><div><strong>Резервная копия базы</strong><p class="muted">Скачивается актуальная копия аккаунтов, желаний, настроек и журнала. Храни файл в надёжном месте.</p></div><a class="button secondary" href="/api/admin/backup" download>Скачать архив базы</a></div>
+            </section>
             <section class="theme-settings" aria-labelledby="theme-heading">
               <div class="panel-heading"><div><p class="section-kicker">ВИД НОВОГОДНЕЙ ПОЧТЫ</p><h2 id="theme-heading">Оформление сайта</h2><p class="muted">Выберите одну из четырёх праздничных тем. Настройка общая для всех участников.</p></div></div>
               <div class="theme-mode-row"><span>Как менять оформление</span><div class="theme-mode-toggle" role="group" aria-label="Режим оформления"><button type="button" class="theme-mode-button" data-theme-mode="manual">Вручную</button><button type="button" class="theme-mode-button" data-theme-mode="daily">Случайно каждый день</button></div></div>
@@ -98,7 +100,7 @@
             <p id="audit-ip-note" class="audit-ip-note" hidden>Чтобы показывались IP посетителей, в Blitz открой Environment и задай TRUST_PROXY=1, затем перезапусти приложение.</p>
             <form id="audit-filters" class="audit-filters">
               <label>Поиск<input name="q" placeholder="Ник, IP, браузер или текст изменения"></label>
-              <label>Событие<select name="event"><option value="all">Все события</option><option value="site_visit">Посещение сайта</option><option value="login_success">Успешный вход</option><option value="login_failed">Неудачный вход</option><option value="login_blocked">Заблокированная попытка</option><option value="logout">Выход</option><option value="member_created">Создание участника</option><option value="password_changed">Смена пароля</option><option value="member_deleted">Удаление участника</option><option value="access_changed">Изменение прав</option><option value="access_bulk_changed">Массовое изменение прав</option><option value="wish_added">Добавление желания</option><option value="wish_archived">Желание в архиве</option><option value="wish_restored">Желание восстановлено</option><option value="wish_deleted">Удаление желания</option><option value="suggestion_added">Идея для подарка</option><option value="theme_changed">Смена оформления</option></select></label>
+              <label>Событие<select name="event"><option value="all">Все события</option><option value="site_visit">Посещение сайта</option><option value="login_success">Успешный вход</option><option value="login_failed">Неудачный вход</option><option value="login_blocked">Заблокированная попытка</option><option value="logout">Выход</option><option value="member_created">Создание участника</option><option value="password_changed">Смена пароля</option><option value="member_deleted">Удаление участника</option><option value="access_changed">Изменение прав</option><option value="access_bulk_changed">Массовое изменение прав</option><option value="wish_added">Добавление желания</option><option value="wish_archived">Желание в архиве</option><option value="wish_restored">Желание восстановлено</option><option value="wish_deleted">Удаление желания</option><option value="suggestion_added">Идея для подарка</option><option value="theme_changed">Смена оформления</option><option value="avatar_changed">Смена аватара</option></select></label>
               <label>С даты<input name="from" type="date"></label><label>По дату<input name="to" type="date"></label>
               <label>Порядок<select name="order"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option></select></label>
               <button class="button primary" type="submit">Применить</button><button class="button secondary" id="audit-reset" type="button">Сбросить</button>
@@ -112,5 +114,15 @@
       <footer class="page-footer"><span>Письмо Деду Морозу</span><span>Маленькое чудо начинается с желания ✦</span><span>2027</span></footer>
     </div>
   </main>
+  <dialog id="avatar-dialog" class="avatar-dialog" aria-labelledby="avatar-title">
+    <form method="dialog" class="avatar-dialog-card">
+      <button class="avatar-dialog-close" type="submit" aria-label="Закрыть">×</button>
+      <p class="section-kicker">ВАШ ОБРАЗ</p><h2 id="avatar-title">Выберите аватар</h2>
+      <p class="muted">Он будет виден рядом с вашим именем участникам, которым доступен ваш список.</p>
+      <div id="avatar-picker" class="avatar-picker" role="group" aria-label="20 праздничных аватаров"></div>
+      <p id="avatar-status" class="avatar-status" aria-live="polite"></p>
+      <div class="avatar-dialog-actions"><button id="avatar-cancel" class="button secondary" type="button">Отмена</button><button id="avatar-save" class="button primary" type="button">Сохранить аватар</button></div>
+    </form>
+  </dialog>
 </body>
 </html>

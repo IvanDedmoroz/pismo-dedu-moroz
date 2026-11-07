@@ -21,6 +21,14 @@ const node = (tag, className = "", text = "") => {
   if (text !== "") item.textContent = text;
   return item;
 };
+const avatarNames = ["Дед Мороз", "Снегурочка", "Снеговик", "Олень", "Лисёнок", "Медвежонок", "Сова", "Пингвин", "Зайчик", "Белочка", "Волк", "Кот", "Щенок", "Ёжик", "Лось", "Снегирь", "Тюлень", "Пряничный человечек", "Эльф", "Зимняя фея"];
+function makeAvatar(key, fallback = "?") {
+  if (!key) return node("span", "avatar-fallback", fallback);
+  const image = document.createElement("img"); image.src = `/avatars/${key}.svg`; image.alt = ""; image.loading = "lazy";
+  image.onerror = () => { image.remove(); };
+  return image;
+}
+function renderAvatar(target, key, fallback) { target.replaceChildren(makeAvatar(key, fallback)); }
 function message(target, text) { target.textContent = text; target.hidden = !text; }
 function showLogin(error = "") { loginView.hidden = false; appView.hidden = true; message(loginError, error); }
 function showApp() { loginView.hidden = true; appView.hidden = false; message(loginError, ""); }
@@ -75,7 +83,7 @@ function activeRule(ownerId, viewerId) {
 }
 function render() {
   if (!data) return;
-  byId("user-avatar").textContent = (data.current.name || "?").slice(0, 1).toUpperCase();
+  renderAvatar(byId("user-avatar"), data.current.avatarKey, (data.current.name || "?").slice(0, 1).toUpperCase());
   byId("user-label").textContent = data.current.name;
   byId("access-tab").hidden = !data.current.isAdmin;
   byId("audit-tab").hidden = !data.current.isAdmin;
@@ -101,7 +109,7 @@ function renderWishlist() {
   accessible.forEach((member) => {
     const chip = node("button", `person-chip ${member.id === selectedId ? "selected" : ""}`);
     chip.type = "button"; chip.dataset.member = member.id;
-    chip.append(node("span", "avatar small", member.name.slice(0, 1).toUpperCase()));
+    const avatar = node("span", "avatar small"); renderAvatar(avatar, member.avatarKey, member.name.slice(0, 1).toUpperCase()); chip.append(avatar);
     chip.append(node("span", "", member.id === data.current.id ? "Мои желания" : member.name));
     chip.append(node("span", "chip-count", String(data.wishes.filter((wish) => wish.ownerId === member.id).length)));
     people.append(chip);
@@ -260,6 +268,8 @@ const auditEventNames = {
   wish_archived: "Желание в архиве", wish_restored: "Желание восстановлено", wish_deleted: "Удаление желания", suggestion_added: "Идея для подарка", theme_changed: "Смена оформления",
   feedback_added: "Комментарий или предложение", feedback_archived: "Запись в архиве", feedback_restored: "Запись восстановлена",
   gift_claim_added: "Готовность сделать подарок", gift_claim_removed: "Отметка о подарке снята",
+  database_backup_requested: "Скачивание резервной копии базы",
+  avatar_changed: "Смена аватара",
 };
 function describeAgent(value) {
   const ua = String(value || "");
@@ -434,6 +444,35 @@ byId("login-form").addEventListener("submit", async (event) => {
     formElement.reset(); await load();
   } catch (error) { message(loginError, error.message); }
   finally { setBusy(false); }
+});
+let pendingAvatarKey = "";
+function renderAvatarPicker() {
+  const picker = byId("avatar-picker"); picker.replaceChildren();
+  avatarNames.forEach((name, index) => {
+    const key = `avatar-${String(index + 1).padStart(2, "0")}`;
+    const option = node("button", "avatar-option"); option.type = "button"; option.dataset.avatar = key; option.setAttribute("aria-pressed", String(key === pendingAvatarKey)); option.setAttribute("aria-label", name); option.title = name;
+    const image = makeAvatar(key); option.append(image, node("span", "avatar-option-name", name)); picker.append(option);
+  });
+}
+byId("user-avatar").addEventListener("click", () => {
+  pendingAvatarKey = data?.current.avatarKey || "";
+  renderAvatarPicker(); message(byId("avatar-status"), ""); byId("avatar-dialog").showModal();
+});
+byId("avatar-picker").addEventListener("click", (event) => {
+  const option = event.target.closest("[data-avatar]"); if (!option) return;
+  pendingAvatarKey = option.dataset.avatar;
+  byId("avatar-picker").querySelectorAll("[data-avatar]").forEach((button) => button.setAttribute("aria-pressed", String(button === option)));
+});
+byId("avatar-cancel").addEventListener("click", () => byId("avatar-dialog").close());
+byId("avatar-save").addEventListener("click", async () => {
+  const saveButton = byId("avatar-save"); saveButton.disabled = true; message(byId("avatar-status"), "");
+  try {
+    const result = await api("/api/profile/avatar", { method: "POST", body: JSON.stringify({ avatarKey: pendingAvatarKey }) });
+    data.current.avatarKey = result.avatarKey;
+    data.members.forEach((member) => { if (member.id === data.current.id) member.avatarKey = result.avatarKey; });
+    byId("avatar-dialog").close(); render();
+  } catch (error) { message(byId("avatar-status"), error.message); }
+  finally { saveButton.disabled = false; }
 });
 byId("logout-button").addEventListener("click", async () => { try { await api("/api/logout", { method: "POST", body: "{}" }); } finally { data = null; showLogin(""); } });
 byId("add-wish-toggle").addEventListener("click", () => { byId("wish-form").hidden = !byId("wish-form").hidden; });
