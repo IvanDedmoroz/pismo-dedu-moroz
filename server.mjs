@@ -94,6 +94,20 @@ db.exec(`
     setting_key TEXT PRIMARY KEY,
     setting_value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS app_updates (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    author_id TEXT REFERENCES members(id) ON DELETE SET NULL
+  );
+  CREATE TABLE IF NOT EXISTS app_update_reactions (
+    update_id TEXT NOT NULL REFERENCES app_updates(id) ON DELETE CASCADE,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    reaction INTEGER NOT NULL CHECK (reaction IN (-1,1)),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (update_id, member_id)
+  );
   CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -114,6 +128,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS gift_claims_member_idx ON gift_claims(member_id, wish_id);
   CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC, id DESC);
   CREATE INDEX IF NOT EXISTS audit_logs_username_idx ON audit_logs(username, created_at DESC);
+  CREATE INDEX IF NOT EXISTS app_updates_created_idx ON app_updates(created_at DESC);
+  CREATE INDEX IF NOT EXISTS app_update_reactions_member_idx ON app_update_reactions(member_id, update_id);
 `);
 
 db.prepare("INSERT OR IGNORE INTO app_settings (setting_key,setting_value) VALUES (?,?)").run("theme_mode", "manual");
@@ -129,6 +145,10 @@ const memberColumns = db.prepare("PRAGMA table_info(members)").all();
 if (!memberColumns.some((column) => column.name === "avatar_key")) {
   db.exec("ALTER TABLE members ADD COLUMN avatar_key TEXT NOT NULL DEFAULT ''");
 }
+db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
+  .run("release-2026-11-07-avatars", "20 праздничных аватаров", "Теперь каждый участник может выбрать один из 20 зимних аватаров для своего профиля. Выбранная картинка отображается рядом с именем в списках участников.", "2026-11-07T09:00:00.000Z");
+db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
+  .run("release-2026-11-07-updates", "Лента обновлений и реакции", "Появилась вкладка с новостями сайта. Поставьте 👍 или 👎, чтобы организатор видел, какие изменения вам понравились. Реакцию можно изменить в любой момент.", "2026-11-07T12:00:00.000Z");
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
@@ -252,6 +272,14 @@ function memberListFor(member) {
   return db.prepare(`SELECT id,name,username,is_admin,avatar_key AS avatarKey FROM members WHERE id=? OR id IN
     (SELECT owner_id FROM access_rules WHERE viewer_id=? AND can_view=1) ORDER BY name COLLATE NOCASE`).all(member.id, member.id);
 }
+function updatesFor(member) {
+  return db.prepare(`SELECT u.id,u.title,u.body,u.created_at AS createdAt,
+    COALESCE(SUM(CASE WHEN r.reaction=1 THEN 1 ELSE 0 END),0) AS likes,
+    COALESCE(SUM(CASE WHEN r.reaction=-1 THEN 1 ELSE 0 END),0) AS dislikes,
+    COALESCE(MAX(CASE WHEN r.member_id=? THEN r.reaction ELSE 0 END),0) AS myReaction
+    FROM app_updates u LEFT JOIN app_update_reactions r ON r.update_id=u.id
+    GROUP BY u.id ORDER BY u.created_at DESC,u.id DESC`).all(member.id);
+}
 function bootstrap(member) {
   const members = memberListFor(member);
   const access = member.is_admin
@@ -280,7 +308,7 @@ function bootstrap(member) {
   const matrixLayout = member.is_admin
     ? (db.prepare("SELECT layout FROM matrix_preferences WHERE member_id=?").get(member.id)?.layout || "{}")
     : "{}";
-  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin, avatarKey: member.avatar_key || "" }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings() };
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin, avatarKey: member.avatar_key || "" }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings(), updates: updatesFor(member) };
 }
 
 const avatarKeys = new Set(Array.from({ length: 20 }, (_, index) => `avatar-${String(index + 1).padStart(2, "0")}`));
@@ -407,6 +435,34 @@ const server = createServer(async (req, res) => {
       db.prepare("UPDATE members SET avatar_key=? WHERE id=?").run(avatarKey, member.id);
       audit(req, "avatar_changed", member, { details: { avatarKey } });
       send(res, 200, { ok: true, avatarKey });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/updates") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const body = await readBody(req);
+      const title = String(body.title || "").trim().slice(0, 100);
+      const text = String(body.body || "").trim().slice(0, 2000);
+      if (!title || !text) return fail(res, "Заполните заголовок и описание обновления.");
+      const id = randomBytes(16).toString("hex");
+      const createdAt = new Date().toISOString();
+      db.prepare("INSERT INTO app_updates (id,title,body,created_at,author_id) VALUES (?,?,?,?,?)").run(id, title, text, createdAt, member.id);
+      audit(req, "update_published", member, { details: { title } });
+      send(res, 201, { ok: true, id });
+      return;
+    }
+    const reactionMatch = req.method === "POST" ? url.pathname.match(/^\/api\/updates\/([^/]+)\/reaction$/) : null;
+    if (reactionMatch) {
+      const member = needMember(req, res); if (!member) return;
+      const updateId = decodeURIComponent(reactionMatch[1]);
+      if (!db.prepare("SELECT 1 FROM app_updates WHERE id=?").get(updateId)) return fail(res, "Обновление не найдено.", 404);
+      const body = await readBody(req);
+      const reaction = Number(body.reaction);
+      if (![ -1, 0, 1 ].includes(reaction)) return fail(res, "Выберите лайк или негативную реакцию.");
+      if (reaction === 0) db.prepare("DELETE FROM app_update_reactions WHERE update_id=? AND member_id=?").run(updateId, member.id);
+      else db.prepare(`INSERT INTO app_update_reactions (update_id,member_id,reaction,updated_at) VALUES (?,?,?,?)
+        ON CONFLICT(update_id,member_id) DO UPDATE SET reaction=excluded.reaction,updated_at=excluded.updated_at`)
+        .run(updateId, member.id, reaction, new Date().toISOString());
+      send(res, 200, { ok: true });
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/login") {
