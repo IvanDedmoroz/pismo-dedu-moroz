@@ -207,6 +207,17 @@ function renderWishlist() {
   });
   const suggest = !own && !!activeRule(selectedId, data.current.id).can_suggest;
   byId("suggest-form").hidden = !suggest;
+  const selectedIdeas = data.suggestions.filter((item) => item.ownerId === selectedId && (!item.isPrivate || data.current.isAdmin || item.ownerId === data.current.id));
+  byId("selected-suggestions").hidden = own || showArchivedWishes || !selectedIdeas.length;
+  byId("selected-suggestions-title").textContent = `Предложения для ${selected?.name || "участника"}`;
+  const selectedIdeaList = byId("selected-suggestion-list"); selectedIdeaList.replaceChildren();
+  selectedIdeas.forEach((idea) => {
+    const row = node("article", "suggestion");
+    row.append(node("span", "avatar small", idea.authorName.slice(0, 1).toUpperCase()));
+    const text = node("div"); text.append(node("strong", "", idea.authorName), node("p", "", idea.body));
+    if (idea.isPrivate) text.append(node("small", "suggestion-visibility private", "🔒 Личное предложение — видно получателю и организатору"));
+    row.append(text, node("span", "suggestion-mark", "✦")); selectedIdeaList.append(row);
+  });
   const ideas = data.suggestions.filter((item) => item.ownerId === data.current.id);
   byId("suggestions").hidden = !own || !ideas.length;
   const ideaList = byId("suggestion-list"); ideaList.replaceChildren();
