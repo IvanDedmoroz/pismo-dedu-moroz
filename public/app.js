@@ -21,6 +21,7 @@ const node = (tag, className = "", text = "") => {
   if (text !== "") item.textContent = text;
   return item;
 };
+const suggestionAuthorName = (idea) => idea.isAnonymous && !data.current.isAdmin ? "Анонимно" : (idea.authorName || "Участник");
 const avatarNames = ["Дед Мороз", "Снегурочка", "Снеговик", "Олень", "Лисёнок", "Медвежонок", "Сова", "Пингвин", "Зайчик", "Белочка", "Волк", "Кот", "Щенок", "Ёжик", "Лось", "Снегирь", "Тюлень", "Пряничный человечек", "Эльф", "Зимняя фея"];
 function makeAvatar(key, fallback = "?") {
   if (!key) return node("span", "avatar-fallback", fallback);
@@ -114,8 +115,9 @@ function renderGiftSuggestions() {
     const card = node("article", "gift-suggestion-entry");
     const header = node("div", "gift-suggestion-header");
     header.append(node("strong", "", idea.ownerId === data.current.id ? "Для вас" : `Для ${idea.ownerName}`));
-    header.append(node("span", idea.isPrivate ? "suggestion-visibility private" : "suggestion-visibility", idea.isPrivate ? "🔒 Только получателю и организатору" : "Видно всем"));
-    card.append(header, node("p", "gift-suggestion-body", idea.body), node("small", "gift-suggestion-author", `Предложил(а): ${idea.authorName}`));
+    const visibilityText = idea.isPrivate ? "🔒 Только получателю и организатору" : idea.isAnonymous ? "Анонимно для участников" : "Видно всем";
+    header.append(node("span", idea.isPrivate ? "suggestion-visibility private" : "suggestion-visibility", visibilityText));
+    card.append(header, node("p", "gift-suggestion-body", idea.body), node("small", "gift-suggestion-author", `Предложил(а): ${suggestionAuthorName(idea)}`));
     entries.append(card);
   });
 }
@@ -213,8 +215,9 @@ function renderWishlist() {
   const selectedIdeaList = byId("selected-suggestion-list"); selectedIdeaList.replaceChildren();
   selectedIdeas.forEach((idea) => {
     const row = node("article", "suggestion");
-    row.append(node("span", "avatar small", idea.authorName.slice(0, 1).toUpperCase()));
-    const text = node("div"); text.append(node("strong", "", idea.authorName), node("p", "", idea.body));
+    const author = suggestionAuthorName(idea);
+    row.append(node("span", "avatar small", author.slice(0, 1).toUpperCase()));
+    const text = node("div"); text.append(node("strong", "", author), node("p", "", idea.body));
     if (idea.isPrivate) text.append(node("small", "suggestion-visibility private", "🔒 Личное предложение — видно получателю и организатору"));
     row.append(text, node("span", "suggestion-mark", "✦")); selectedIdeaList.append(row);
   });
@@ -223,8 +226,9 @@ function renderWishlist() {
   const ideaList = byId("suggestion-list"); ideaList.replaceChildren();
   ideas.forEach((idea) => {
     const row = node("article", "suggestion");
-    row.append(node("span", "avatar small", idea.authorName.slice(0, 1).toUpperCase()));
-    const text = node("div"); text.append(node("strong", "", idea.authorName), node("p", "", idea.body));
+    const author = suggestionAuthorName(idea);
+    row.append(node("span", "avatar small", author.slice(0, 1).toUpperCase()));
+    const text = node("div"); text.append(node("strong", "", author), node("p", "", idea.body));
     if (idea.isPrivate) text.append(node("small", "suggestion-visibility private", "🔒 Личное предложение"));
     row.append(text, node("span", "suggestion-mark", "✦")); ideaList.append(row);
   });
@@ -626,7 +630,7 @@ byId("suggest-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
   const formElement = event.currentTarget; const form = new FormData(formElement);
   try {
-    await api("/api/suggestions", { method: "POST", body: JSON.stringify({ ownerId: selectedId, text: form.get("text"), isPrivate: form.get("private") === "on" }) });
+    await api("/api/suggestions", { method: "POST", body: JSON.stringify({ ownerId: selectedId, text: form.get("text"), visibility: form.get("visibility") }) });
     formElement.reset(); message(appNotice, "Идея отправлена."); await load();
   } catch (error) { message(appError, error.message); }
   finally { setBusy(false); }
