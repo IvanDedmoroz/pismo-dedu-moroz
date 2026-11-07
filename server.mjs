@@ -1,8 +1,11 @@
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { pbkdf2Sync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { extname, resolve, sep } from "node:path";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { extname, join, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { createGzip } from "node:zlib";
+import { pipeline } from "node:stream/promises";
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +36,8 @@ db.exec(`
     password_salt TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     is_admin INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0,1)),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    avatar_key TEXT NOT NULL DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
@@ -121,6 +125,10 @@ const wishColumns = db.prepare("PRAGMA table_info(wishes)").all();
 if (!wishColumns.some((column) => column.name === "archived_at")) {
   db.exec("ALTER TABLE wishes ADD COLUMN archived_at TEXT");
 }
+const memberColumns = db.prepare("PRAGMA table_info(members)").all();
+if (!memberColumns.some((column) => column.name === "avatar_key")) {
+  db.exec("ALTER TABLE members ADD COLUMN avatar_key TEXT NOT NULL DEFAULT ''");
+}
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
@@ -197,7 +205,7 @@ function cookieHeader(req, token, maxAge) {
 function memberFromRequest(req) {
   const token = cookieToken(req);
   if (!/^[a-f0-9]{64}$/.test(token)) return null;
-  return db.prepare(`SELECT m.id,m.name,m.username,m.is_admin FROM sessions s JOIN members m ON m.id=s.member_id
+  return db.prepare(`SELECT m.id,m.name,m.username,m.is_admin,m.avatar_key FROM sessions s JOIN members m ON m.id=s.member_id
     WHERE s.token_hash=? AND s.expires_at>?`).get(sha256(token), Math.floor(Date.now() / 1000)) || null;
 }
 function needSameOrigin(req, res) {
@@ -240,8 +248,8 @@ function getThemeSettings() {
   return { mode, theme, date };
 }
 function memberListFor(member) {
-  if (member.is_admin) return db.prepare("SELECT id,name,username,is_admin FROM members ORDER BY name COLLATE NOCASE").all();
-  return db.prepare(`SELECT id,name,username,is_admin FROM members WHERE id=? OR id IN
+  if (member.is_admin) return db.prepare("SELECT id,name,username,is_admin,avatar_key AS avatarKey FROM members ORDER BY name COLLATE NOCASE").all();
+  return db.prepare(`SELECT id,name,username,is_admin,avatar_key AS avatarKey FROM members WHERE id=? OR id IN
     (SELECT owner_id FROM access_rules WHERE viewer_id=? AND can_view=1) ORDER BY name COLLATE NOCASE`).all(member.id, member.id);
 }
 function bootstrap(member) {
@@ -272,8 +280,10 @@ function bootstrap(member) {
   const matrixLayout = member.is_admin
     ? (db.prepare("SELECT layout FROM matrix_preferences WHERE member_id=?").get(member.id)?.layout || "{}")
     : "{}";
-  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings() };
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin, avatarKey: member.avatar_key || "" }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings() };
 }
+
+const avatarKeys = new Set(Array.from({ length: 20 }, (_, index) => `avatar-${String(index + 1).padStart(2, "0")}`));
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -281,6 +291,35 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/data") {
       const member = needMember(req, res);
       if (member) send(res, 200, bootstrap(member));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/admin/backup") {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const fetchSite = String(req.headers["sec-fetch-site"] || "");
+      if ((fetchSite && !["same-origin", "none"].includes(fetchSite)) || (req.headers.origin && !originIsLocal(req))) {
+        send(res, 403, { error: "Отклонён запрос с другого сайта." });
+        return;
+      }
+      const backupDir = mkdtempSync(join(tmpdir(), "pismo-dedu-moroz-backup-"));
+      const backupPath = join(backupDir, "wishlist.sqlite");
+      try {
+        // VACUUM INTO creates a consistent SQLite snapshot and includes committed WAL data.
+        db.exec(`VACUUM INTO '${backupPath.replaceAll("'", "''")}'`);
+        audit(req, "database_backup_requested", member);
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        res.writeHead(200, {
+          ...securityHeaders(),
+          "content-type": "application/gzip",
+          "content-disposition": `attachment; filename="pismo-dedu-moroz-backup-${stamp}.sqlite.gz"`,
+          "cache-control": "no-store",
+        });
+        await pipeline(createReadStream(backupPath), createGzip({ level: 9 }), res);
+      } catch (error) {
+        if (res.headersSent) res.destroy();
+        else send(res, 500, { error: "Не удалось создать резервную копию базы." });
+      } finally {
+        rmSync(backupDir, { recursive: true, force: true });
+      }
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/theme") {
@@ -358,6 +397,16 @@ const server = createServer(async (req, res) => {
       const member = needMember(req, res); if (!member) return;
       audit(req, "site_visit", member);
       send(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/profile/avatar") {
+      const member = needMember(req, res); if (!member) return;
+      const body = await readBody(req);
+      const avatarKey = String(body.avatarKey || "");
+      if (!avatarKeys.has(avatarKey)) return fail(res, "Выберите аватар из списка.");
+      db.prepare("UPDATE members SET avatar_key=? WHERE id=?").run(avatarKey, member.id);
+      audit(req, "avatar_changed", member, { details: { avatarKey } });
+      send(res, 200, { ok: true, avatarKey });
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/login") {
