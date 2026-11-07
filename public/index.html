@@ -42,7 +42,7 @@
       <div id="app-error" class="alert error" role="alert" hidden></div>
       <div id="app-notice" class="alert success" role="status" hidden></div>
       <div class="workspace">
-        <aside class="sidebar"><p class="section-kicker">МОЯ ПОЧТА</p><button class="nav-item active" data-tab="list"><span>♡</span> Списки желаний</button><button id="feedback-tab" class="nav-item" data-tab="feedback"><span>✎</span> Идеи и отзывы</button><button id="access-tab" class="nav-item" data-tab="access" hidden><span>⌘</span> Участники и доступ</button><button id="audit-tab" class="nav-item" data-tab="audit" hidden><span>◷</span> Журнал действий</button><div class="side-note"><span>✧</span><p>Секретное желание? Личный список виден только вам, пока вы не откроете доступ.</p></div></aside>
+        <aside class="sidebar"><p class="section-kicker">МОЯ ПОЧТА</p><button class="nav-item active" data-tab="list"><span>♡</span> Списки желаний</button><button id="feedback-tab" class="nav-item" data-tab="feedback"><span>✎</span> Идеи и отзывы</button><button id="updates-tab" class="nav-item" data-tab="updates"><span>✧</span> Обновления</button><button id="access-tab" class="nav-item" data-tab="access" hidden><span>⌘</span> Участники и доступ</button><button id="audit-tab" class="nav-item" data-tab="audit" hidden><span>◷</span> Журнал действий</button><div class="side-note"><span>✧</span><p>Секретное желание? Личный список виден только вам, пока вы не откроете доступ.</p></div></aside>
         <section class="main-panel">
           <section id="list-panel">
             <div class="panel-heading"><div><p class="section-kicker">ВАШ КРУГ</p><h2>Списки желаний</h2><p id="circle-hint" class="muted"></p></div><button id="add-wish-toggle" class="button primary">＋ Добавить желание</button></div>
@@ -95,12 +95,22 @@
               <p id="theme-status" class="theme-status" aria-live="polite"></p>
             </section>
           </section>
+          <section id="updates-panel" hidden>
+            <div class="panel-heading"><div><p class="section-kicker">НОВОСТИ САЙТА</p><h2>Обновления</h2><p class="muted">Читайте, что нового появилось на сайте, и отмечайте понравившиеся изменения.</p></div></div>
+            <form id="update-create-form" class="update-create-form" hidden>
+              <div class="form-title">Опубликовать обновление</div>
+              <label>Заголовок<input name="title" maxlength="100" placeholder="Например, новые темы оформления" required></label>
+              <label>Что изменилось<textarea name="body" maxlength="2000" placeholder="Коротко опишите нововведение…" required></textarea></label>
+              <button class="button primary" type="submit">Опубликовать</button>
+            </form>
+            <div id="updates-list" class="updates-list" aria-live="polite"></div>
+          </section>
           <section id="audit-panel" hidden>
             <div class="panel-heading"><div><p class="section-kicker">ЖУРНАЛ БЕЗОПАСНОСТИ</p><h2>Доступы и действия</h2><p class="muted">Входы, посещения и изменения в аккаунтах. Пароли в журнал не записываются.</p></div></div>
             <p id="audit-ip-note" class="audit-ip-note" hidden>Чтобы показывались IP посетителей, в Blitz открой Environment и задай TRUST_PROXY=1, затем перезапусти приложение.</p>
             <form id="audit-filters" class="audit-filters">
               <label>Поиск<input name="q" placeholder="Ник, IP, браузер или текст изменения"></label>
-              <label>Событие<select name="event"><option value="all">Все события</option><option value="site_visit">Посещение сайта</option><option value="login_success">Успешный вход</option><option value="login_failed">Неудачный вход</option><option value="login_blocked">Заблокированная попытка</option><option value="logout">Выход</option><option value="member_created">Создание участника</option><option value="password_changed">Смена пароля</option><option value="member_deleted">Удаление участника</option><option value="access_changed">Изменение прав</option><option value="access_bulk_changed">Массовое изменение прав</option><option value="wish_added">Добавление желания</option><option value="wish_archived">Желание в архиве</option><option value="wish_restored">Желание восстановлено</option><option value="wish_deleted">Удаление желания</option><option value="suggestion_added">Идея для подарка</option><option value="theme_changed">Смена оформления</option><option value="avatar_changed">Смена аватара</option></select></label>
+              <label>Событие<select name="event"><option value="all">Все события</option><option value="site_visit">Посещение сайта</option><option value="login_success">Успешный вход</option><option value="login_failed">Неудачный вход</option><option value="login_blocked">Заблокированная попытка</option><option value="logout">Выход</option><option value="member_created">Создание участника</option><option value="password_changed">Смена пароля</option><option value="member_deleted">Удаление участника</option><option value="access_changed">Изменение прав</option><option value="access_bulk_changed">Массовое изменение прав</option><option value="wish_added">Добавление желания</option><option value="wish_archived">Желание в архиве</option><option value="wish_restored">Желание восстановлено</option><option value="wish_deleted">Удаление желания</option><option value="suggestion_added">Идея для подарка</option><option value="theme_changed">Смена оформления</option><option value="avatar_changed">Смена аватара</option><option value="update_published">Публикация обновления</option></select></label>
               <label>С даты<input name="from" type="date"></label><label>По дату<input name="to" type="date"></label>
               <label>Порядок<select name="order"><option value="newest">Сначала новые</option><option value="oldest">Сначала старые</option></select></label>
               <button class="button primary" type="submit">Применить</button><button class="button secondary" id="audit-reset" type="button">Сбросить</button>

@@ -90,15 +90,36 @@ function render() {
   byId("feedback-tab").classList.toggle("active", currentTab === "feedback");
   byId("access-tab").classList.toggle("active", currentTab === "access");
   byId("audit-tab").classList.toggle("active", currentTab === "audit");
+  byId("updates-tab").classList.toggle("active", currentTab === "updates");
   document.querySelector('[data-tab="list"]').classList.toggle("active", currentTab === "list");
   byId("list-panel").hidden = currentTab !== "list";
   byId("feedback-panel").hidden = currentTab !== "feedback";
   byId("access-panel").hidden = currentTab !== "access" || !data.current.isAdmin;
   byId("audit-panel").hidden = currentTab !== "audit" || !data.current.isAdmin;
+  byId("updates-panel").hidden = currentTab !== "updates";
+  byId("update-create-form").hidden = !data.current.isAdmin;
   if (currentTab === "access" && data.current.isAdmin) { renderMatrix(); renderThemeSettings(); }
   else if (currentTab === "audit" && data.current.isAdmin) loadAudit();
+  else if (currentTab === "updates") renderUpdates();
   else if (currentTab === "list") renderWishlist();
   else if (currentTab === "feedback") loadFeedback();
+}
+function renderUpdates() {
+  const list = byId("updates-list"); list.replaceChildren();
+  (data.updates || []).forEach((update) => {
+    const card = node("article", "update-card");
+    const header = node("div", "update-card-header");
+    const copy = node("div"); copy.append(node("p", "section-kicker", "ОБНОВЛЕНИЕ САЙТА"), node("h3", "", update.title));
+    const date = new Date(update.createdAt);
+    header.append(copy, node("time", "update-date", Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" })));
+    card.append(header, node("p", "update-body", update.body));
+    const reactions = node("div", "update-reactions");
+    const like = node("button", `reaction-button ${update.myReaction === 1 ? "selected" : ""}`, `👍 Нравится · ${update.likes}`);
+    like.type = "button"; like.dataset.updateReaction = update.id; like.dataset.reaction = "1"; like.setAttribute("aria-pressed", String(update.myReaction === 1));
+    const dislike = node("button", `reaction-button ${update.myReaction === -1 ? "selected" : ""}`, `👎 Не нравится · ${update.dislikes}`);
+    dislike.type = "button"; dislike.dataset.updateReaction = update.id; dislike.dataset.reaction = "-1"; dislike.setAttribute("aria-pressed", String(update.myReaction === -1));
+    reactions.append(like, dislike); card.append(reactions); list.append(card);
+  });
 }
 function renderWishlist() {
   const own = selectedId === data.current.id;
@@ -270,6 +291,7 @@ const auditEventNames = {
   gift_claim_added: "Готовность сделать подарок", gift_claim_removed: "Отметка о подарке снята",
   database_backup_requested: "Скачивание резервной копии базы",
   avatar_changed: "Смена аватара",
+  update_published: "Публикация обновления",
 };
 function describeAgent(value) {
   const ua = String(value || "");
@@ -475,6 +497,23 @@ byId("avatar-save").addEventListener("click", async () => {
   finally { saveButton.disabled = false; }
 });
 byId("logout-button").addEventListener("click", async () => { try { await api("/api/logout", { method: "POST", body: "{}" }); } finally { data = null; showLogin(""); } });
+byId("update-create-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); if (!data?.current.isAdmin) return;
+  const formElement = event.currentTarget; const form = new FormData(formElement);
+  try {
+    await api("/api/updates", { method: "POST", body: JSON.stringify({ title: form.get("title"), body: form.get("body") }) });
+    formElement.reset(); message(appNotice, "Обновление опубликовано."); await load(); currentTab = "updates"; render();
+  } catch (error) { message(appError, error.message); }
+});
+byId("updates-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-update-reaction]"); if (!button) return;
+  const update = data?.updates?.find((item) => item.id === button.dataset.updateReaction); if (!update) return;
+  const next = update.myReaction === Number(button.dataset.reaction) ? 0 : Number(button.dataset.reaction);
+  try {
+    await api(`/api/updates/${encodeURIComponent(update.id)}/reaction`, { method: "POST", body: JSON.stringify({ reaction: next }) });
+    data = await api("/api/data"); render();
+  } catch (error) { message(appError, error.message); }
+});
 byId("add-wish-toggle").addEventListener("click", () => { byId("wish-form").hidden = !byId("wish-form").hidden; });
 byId("add-member-toggle").addEventListener("click", () => { byId("member-form").hidden = !byId("member-form").hidden; });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { byId(button.dataset.close).hidden = true; }));
