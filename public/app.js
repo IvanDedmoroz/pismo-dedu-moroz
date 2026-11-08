@@ -245,6 +245,23 @@ function renderWishlist() {
     if (idea.isPrivate) text.append(node("small", "suggestion-visibility private", "🔒 Личное предложение"));
     row.append(text, node("span", "suggestion-mark", "✦")); ideaList.append(row);
   });
+  const telegramWishes = data.telegramWishes || [];
+  byId("telegram-wishes-board").hidden = telegramWishes.length === 0;
+  byId("telegram-wishes-count").textContent = telegramWishes.length ? `${telegramWishes.length}${telegramWishes.length === 200 ? "+" : ""}` : "";
+  const telegramList = byId("telegram-wishes-list"); telegramList.replaceChildren();
+  telegramWishes.forEach((wish) => {
+    const row = node("article", "telegram-wish-entry");
+    const content = node("div", "telegram-wish-content");
+    content.append(node("strong", "", wish.senderName), node("p", "", wish.body));
+    const time = node("time", "telegram-wish-time", new Intl.DateTimeFormat("ru-RU", { dateStyle: "short", timeStyle: "short" }).format(new Date(wish.createdAt)));
+    time.dateTime = wish.createdAt;
+    row.append(content, time);
+    if (data.current.isAdmin) {
+      const remove = node("button", "delete-link telegram-wish-delete", "Удалить");
+      remove.type = "button"; remove.dataset.deleteTelegramWish = wish.id; row.append(remove);
+    }
+    telegramList.append(row);
+  });
 }
 function renderMatrix() {
   const wrap = byId("matrix-wrap"); wrap.replaceChildren();
@@ -602,6 +619,15 @@ byId("wish-grid").addEventListener("click", async (event) => {
     message(appNotice, notice); await load();
   }
   catch (error) { message(appError, error.message); }
+});
+byId("telegram-wishes-list").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-telegram-wish]");
+  if (!button || !data.current.isAdmin) return;
+  if (!confirm("Удалить это пожелание из Telegram?")) return;
+  try {
+    await api(`/api/admin/telegram-wishes/${encodeURIComponent(button.dataset.deleteTelegramWish)}`, { method: "DELETE" });
+    message(appNotice, "Telegram-пожелание удалено."); await load();
+  } catch (error) { message(appError, error.message); }
 });
 byId("member-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (busy) return; setBusy(true); message(appError, "");
