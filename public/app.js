@@ -92,19 +92,30 @@ function render() {
   byId("access-tab").classList.toggle("active", currentTab === "access");
   byId("audit-tab").classList.toggle("active", currentTab === "audit");
   byId("updates-tab").classList.toggle("active", currentTab === "updates");
+  byId("about-tab").classList.toggle("active", currentTab === "about");
   document.querySelector('[data-tab="list"]').classList.toggle("active", currentTab === "list");
   byId("list-panel").hidden = currentTab !== "list";
   byId("feedback-panel").hidden = currentTab !== "feedback";
   byId("access-panel").hidden = currentTab !== "access" || !data.current.isAdmin;
   byId("audit-panel").hidden = currentTab !== "audit" || !data.current.isAdmin;
   byId("updates-panel").hidden = currentTab !== "updates";
+  byId("about-panel").hidden = currentTab !== "about";
   byId("update-create-form").hidden = !data.current.isAdmin;
+  syncQuickGuide();
   renderGiftSuggestions();
   if (currentTab === "access" && data.current.isAdmin) { renderMatrix(); renderThemeSettings(); }
   else if (currentTab === "audit" && data.current.isAdmin) loadAudit();
   else if (currentTab === "updates") renderUpdates();
   else if (currentTab === "list") renderWishlist();
   else if (currentTab === "feedback") loadFeedback();
+}
+function syncQuickGuide() {
+  const guide = byId("quick-guide");
+  if (!guide || guide.dataset.currentUser === data.current.id) return;
+  guide.dataset.currentUser = data.current.id;
+  guide.dataset.preferenceKey = `pismo-guide:${data.current.id}`;
+  try { guide.open = localStorage.getItem(guide.dataset.preferenceKey) !== "closed"; }
+  catch { guide.open = true; }
 }
 function renderGiftSuggestions() {
   const entries = byId("gift-suggestion-list"); if (!entries) return;
@@ -152,7 +163,9 @@ function renderWishlist() {
     chip.append(node("span", "chip-count", String(data.wishes.filter((wish) => wish.ownerId === member.id).length)));
     people.append(chip);
   });
-  byId("circle-hint").textContent = accessible.length === 1 ? "Пока здесь только ваш список." : "Выберите, чьи желания посмотреть.";
+  byId("circle-hint").textContent = accessible.length === 1
+    ? (data.current.isAdmin ? "Пока здесь только ваш список. Добавьте участников в настройках доступа." : "Здесь виден только ваш список. Попросите организатора открыть доступ к спискам близких.")
+    : "Нажмите на имя, чтобы открыть список. Число рядом показывает количество желаний.";
   byId("add-wish-toggle").hidden = !own;
   byId("wish-form").hidden = own ? byId("wish-form").hidden : true;
   byId("wish-view-toggle").hidden = !own;
@@ -430,6 +443,17 @@ function renderFeedback() {
 }
 
 document.querySelectorAll("[data-tab]").forEach((button) => button.addEventListener("click", () => { currentTab = button.dataset.tab; render(); }));
+byId("quick-guide").addEventListener("toggle", (event) => {
+  const guide = event.currentTarget;
+  if (!guide.dataset.preferenceKey) return;
+  try { localStorage.setItem(guide.dataset.preferenceKey, guide.open ? "open" : "closed"); } catch {}
+});
+byId("show-guide-again").addEventListener("click", () => {
+  currentTab = "list"; selectedId = data.current.id; showArchivedWishes = false;
+  const guide = byId("quick-guide");
+  try { localStorage.removeItem(`pismo-guide:${data.current.id}`); } catch {}
+  render(); guide.open = true; guide.scrollIntoView({ behavior: "smooth", block: "center" });
+});
 byId("audit-filters").addEventListener("submit", (event) => { event.preventDefault(); loadAudit(true); });
 byId("audit-reset").addEventListener("click", () => { byId("audit-filters").reset(); loadAudit(true); });
 byId("audit-prev").addEventListener("click", () => { if (auditState.page > 1) { auditState.page--; loadAudit(); } });
