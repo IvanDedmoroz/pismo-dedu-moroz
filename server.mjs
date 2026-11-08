@@ -191,6 +191,8 @@ db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES 
   .run("release-2026-11-07-suggestion-anonymity", "Анонимные предложения подарков", "Теперь можно выбрать: показывать предложение всем с именем, показывать анонимно или оставить видимым только получателю и организатору. Организатор видит автора в любом режиме.", "2026-11-07T15:30:00.000Z");
 db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
   .run("release-2026-11-08-telegram-notifications", "Уведомления о предложениях в Telegram", "Организатор может подключить Telegram-бота: публичные предложения приходят в выбранную группу. Анонимные идеи отправляются без имени автора, личные предложения не публикуются.", "2026-11-08T00:00:00.000Z");
+db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
+  .run("release-2026-11-08-first-visit-guide", "Памятка и раздел «О сайте»", "Для новых участников появилась пошаговая памятка по основным действиям. В разделе «О сайте» можно прочитать, зачем создан проект и как работают списки и предложения.", "2026-11-08T01:00:00.000Z");
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
