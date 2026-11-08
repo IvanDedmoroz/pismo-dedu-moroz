@@ -21,6 +21,32 @@ const passwordBytes = 32;
 const loginFailures = new Map();
 const themeKeys = ["renaissance", "impressionist", "lubok", "moscow"];
 
+async function callTelegram(method, payload) {
+  const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  if (!token) return false;
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok !== true) {
+      console.error(`Telegram ${method} failed:`, response.status, result.error_code || "");
+      return false;
+    }
+    return result.result;
+  } catch (error) {
+    console.error(`Telegram ${method} failed:`, error?.name || "network error");
+    return false;
+  }
+}
+
+async function sendTelegramText(chatId, text, replyMarkup) {
+  return callTelegram("sendMessage", { chat_id: String(chatId), text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
+}
+
 async function sendTelegramSuggestionNotification({ ownerName, authorName, text, visibility }) {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
   const chatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
@@ -32,20 +58,7 @@ async function sendTelegramSuggestionNotification({ ownerName, authorName, text,
   const siteUrl = String(process.env.PUBLIC_APP_URL || "").trim();
   if (siteUrl) lines.push("", siteUrl);
 
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: lines.join("\n") }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || result.ok !== true) {
-      console.error("Telegram suggestion notification failed:", response.status, result.error_code || "");
-    }
-  } catch (error) {
-    console.error("Telegram suggestion notification failed:", error?.name || "network error");
-  }
+  await sendTelegramText(chatId, lines.join("\n"));
 }
 
 if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 16) {
@@ -137,6 +150,24 @@ db.exec(`
     updated_at TEXT NOT NULL,
     PRIMARY KEY (update_id, member_id)
   );
+  CREATE TABLE IF NOT EXISTS telegram_wishes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_user_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    group_chat_id TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS telegram_updates (
+    update_id TEXT PRIMARY KEY,
+    processed_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS telegram_pending_wishes (
+    telegram_user_id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    prompt_message_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -159,6 +190,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS audit_logs_username_idx ON audit_logs(username, created_at DESC);
   CREATE INDEX IF NOT EXISTS app_updates_created_idx ON app_updates(created_at DESC);
   CREATE INDEX IF NOT EXISTS app_update_reactions_member_idx ON app_update_reactions(member_id, update_id);
+  CREATE INDEX IF NOT EXISTS telegram_wishes_created_idx ON telegram_wishes(created_at DESC, id DESC);
+  CREATE INDEX IF NOT EXISTS telegram_wishes_author_idx ON telegram_wishes(telegram_user_id, created_at DESC);
 `);
 
 db.prepare("INSERT OR IGNORE INTO app_settings (setting_key,setting_value) VALUES (?,?)").run("theme_mode", "manual");
@@ -193,6 +226,8 @@ db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES 
   .run("release-2026-11-08-telegram-notifications", "Уведомления о предложениях в Telegram", "Организатор может подключить Telegram-бота: публичные предложения приходят в выбранную группу. Анонимные идеи отправляются без имени автора, личные предложения не публикуются.", "2026-11-08T00:00:00.000Z");
 db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
   .run("release-2026-11-08-first-visit-guide", "Памятка и раздел «О сайте»", "Для новых участников появилась пошаговая памятка по основным действиям. В разделе «О сайте» можно прочитать, зачем создан проект и как работают списки и предложения.", "2026-11-08T01:00:00.000Z");
+db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
+  .run("release-2026-11-08-telegram-wishes", "Кнопочное меню Telegram", "В группе появилось меню для просмотра активных желаний, добавления пожелания без аккаунта и управления собственными записями. Telegram-пожелания видны на сайте отдельным блоком.", "2026-11-08T22:00:00.000Z");
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
@@ -335,6 +370,8 @@ function bootstrap(member) {
     ORDER BY w.created_at DESC`).all(Number(!!member.is_admin), member.id, member.id);
   const archivedWishes = db.prepare(`SELECT id,owner_id AS ownerId,title,url,note,created_at AS createdAt
     FROM wishes WHERE owner_id=? AND archived_at IS NOT NULL ORDER BY archived_at DESC`).all(member.id);
+  const telegramWishes = db.prepare(`SELECT id, sender_name AS senderName, body, created_at AS createdAt
+    FROM telegram_wishes ORDER BY created_at DESC, id DESC LIMIT 200`).all();
   const suggestions = db.prepare(`SELECT s.id,s.owner_id AS ownerId,s.body,s.is_private AS isPrivate,s.is_anonymous AS isAnonymous,s.created_at AS createdAt,
     CASE WHEN s.is_anonymous=1 AND ?=0 THEN NULL ELSE a.name END AS authorName,o.name AS ownerName FROM suggestions s JOIN members a ON a.id=s.author_id JOIN members o ON o.id=s.owner_id
     WHERE (?=1 OR s.is_private=0 OR s.owner_id=?) ORDER BY s.created_at DESC`).all(Number(!!member.is_admin), Number(!!member.is_admin), member.id);
@@ -352,14 +389,221 @@ function bootstrap(member) {
   const matrixLayout = member.is_admin
     ? (db.prepare("SELECT layout FROM matrix_preferences WHERE member_id=?").get(member.id)?.layout || "{}")
     : "{}";
-  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin, avatarKey: member.avatar_key || "" }, members, access, wishes, archivedWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings(), updates: updatesFor(member) };
+  return { current: { id: member.id, name: member.name, username: member.username, isAdmin: !!member.is_admin, avatarKey: member.avatar_key || "" }, members, access, wishes, archivedWishes, telegramWishes, suggestions, giftClaims: Array.from(giftClaims.values()), matrixLayout: JSON.parse(matrixLayout), theme: getThemeSettings(), updates: updatesFor(member) };
 }
 
 const avatarKeys = new Set(Array.from({ length: 20 }, (_, index) => `avatar-${String(index + 1).padStart(2, "0")}`));
 
+function splitTelegramText(text, maxLength = 3800) {
+  const chunks = [];
+  let chunk = "";
+  for (const line of text.split("\n")) {
+    const next = chunk ? `${chunk}\n${line}` : line;
+    if (next.length > maxLength && chunk) { chunks.push(chunk); chunk = line; }
+    else chunk = next;
+  }
+  if (chunk) chunks.push(chunk);
+  return chunks;
+}
+
+function telegramMenuMarkup() {
+  return { inline_keyboard: [
+    [{ text: "🎁 Посмотреть желания", callback_data: "menu:wishes" }],
+    [{ text: "➕ Добавить своё желание", callback_data: "menu:add" }],
+    [{ text: "📝 Мои пожелания", callback_data: "menu:mywishes" }],
+  ] };
+}
+
+async function sendTelegramMenu(chatId) {
+  return sendTelegramText(chatId, "🎄 Меню «Письмо Деду Морозу»\nВыберите действие:", telegramMenuMarkup());
+}
+
+async function sendSiteWishesToTelegram(chatId) {
+  const rows = db.prepare(`SELECT m.name AS ownerName,w.title,w.note,w.url FROM wishes w JOIN members m ON m.id=w.owner_id
+    WHERE w.archived_at IS NULL ORDER BY m.name COLLATE NOCASE,w.created_at DESC`).all();
+  if (!rows.length) { await sendTelegramText(chatId, "В активных списках сайта пока нет пожеланий."); return; }
+  const lines = ["🎁 Активные пожелания участников сайта", "Архивные желания сюда не входят."];
+  let priorOwner = "";
+  for (const row of rows) {
+    if (row.ownerName !== priorOwner) { lines.push("", `${row.ownerName}:`); priorOwner = row.ownerName; }
+    lines.push(`• ${row.title}`);
+    if (row.note) lines.push(`  Подсказка: ${row.note}`);
+    if (row.url) lines.push(`  Ссылка: ${row.url}`);
+  }
+  const chunks = splitTelegramText(lines.join("\n"));
+  for (let index = 0; index < chunks.length; index++) {
+    const prefix = chunks.length > 1 ? `(${index + 1}/${chunks.length})\n` : "";
+    if (!await sendTelegramText(chatId, `${prefix}${chunks[index]}`)) break;
+  }
+}
+
+async function addTelegramWish(telegramUserId, senderName, chatId, text, req) {
+  const body = String(text || "").trim();
+  if (!body) { await sendTelegramText(chatId, "Пожелание пустое. Нажмите «Добавить своё желание» и напишите текст в ответ на подсказку."); return false; }
+  if (body.length > 500) { await sendTelegramText(chatId, "Пожелание слишком длинное. Ограничение — 500 символов."); return false; }
+  const recentCount = db.prepare("SELECT COUNT(*) AS n FROM telegram_wishes WHERE telegram_user_id=? AND created_at>=?")
+    .get(telegramUserId, new Date(Date.now() - 60 * 60 * 1000).toISOString()).n;
+  if (recentCount >= 5) { await sendTelegramText(chatId, "За час можно добавить не более пяти пожеланий. Попробуйте позже."); return false; }
+  const result = db.prepare("INSERT INTO telegram_wishes (telegram_user_id,sender_name,body,created_at,group_chat_id) VALUES (?,?,?,?,?)")
+    .run(telegramUserId, senderName, body, new Date().toISOString(), chatId);
+  audit(req, "telegram_wish_added", { username: `telegram:${telegramUserId}`, name: senderName }, { details: { telegramWishId: Number(result.lastInsertRowid) } });
+  await sendTelegramText(chatId, `Записал пожелание №${result.lastInsertRowid} от ${senderName}. Оно появилось на сайте в разделе «Пожелания из Telegram».`);
+  return true;
+}
+
+async function handleTelegramUpdate(update, req) {
+  const configuredGroupId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  const callback = update?.callback_query;
+  if (callback) {
+    const chatId = String(callback.message?.chat?.id || "");
+    if (chatId !== configuredGroupId || !["group", "supergroup"].includes(callback.message?.chat?.type)) return;
+    const telegramUserId = String(callback.from?.id || "");
+    const senderName = [callback.from?.first_name, callback.from?.last_name].filter(Boolean).join(" ").slice(0, 120) || "Участник Telegram";
+    const action = String(callback.data || "");
+    await callTelegram("answerCallbackQuery", { callback_query_id: callback.id });
+    if (action === "menu:wishes") await sendSiteWishesToTelegram(chatId);
+    else if (action === "menu:add") {
+      const prompt = await sendTelegramText(chatId, `${senderName}, напишите ваше пожелание ответом на это сообщение. Например: «Набор цветных карандашей».`, {
+        force_reply: true, input_field_placeholder: "Напишите пожелание",
+      });
+      if (prompt?.message_id) db.prepare(`INSERT INTO telegram_pending_wishes (telegram_user_id,chat_id,prompt_message_id,created_at) VALUES (?,?,?,?)
+        ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=excluded.chat_id,prompt_message_id=excluded.prompt_message_id,created_at=excluded.created_at`)
+        .run(telegramUserId, chatId, prompt.message_id, new Date().toISOString());
+    } else if (action === "menu:mywishes") {
+      const rows = db.prepare("SELECT id,body FROM telegram_wishes WHERE telegram_user_id=? ORDER BY id DESC LIMIT 10").all(telegramUserId);
+      if (!rows.length) await sendTelegramText(chatId, `${senderName}, вы ещё не добавляли пожеланий через Telegram.`);
+      else {
+        const keyboard = { inline_keyboard: rows.map((row) => [{ text: `Удалить №${row.id}`, callback_data: `wish:delete:${row.id}` }]) };
+        await sendTelegramText(chatId, `${senderName}, ваши пожелания:\n${rows.map((row) => `№${row.id}: ${row.body}`).join("\n")}`, keyboard);
+      }
+    } else if (action.startsWith("wish:delete:")) {
+      const id = Number(action.slice("wish:delete:".length));
+      const result = Number.isSafeInteger(id) && id > 0
+        ? db.prepare("DELETE FROM telegram_wishes WHERE id=? AND telegram_user_id=?").run(id, telegramUserId)
+        : { changes: 0 };
+      if (result.changes) await sendTelegramText(chatId, `Пожелание №${id} удалено.`);
+      else await sendTelegramText(chatId, "Не удалось найти ваше пожелание.");
+    }
+    return;
+  }
+
+  const message = update?.message;
+  if (!configuredGroupId || !message || String(message.chat?.id) !== configuredGroupId) return;
+  if (!["group", "supergroup"].includes(message.chat?.type) || !message.from || message.from.is_bot) return;
+  const chatId = String(message.chat.id);
+  const telegramUserId = String(message.from.id);
+  const senderName = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ").slice(0, 120) || "Участник Telegram";
+  const text = String(message.text || "").trim();
+  const pending = db.prepare("SELECT chat_id,prompt_message_id,created_at FROM telegram_pending_wishes WHERE telegram_user_id=?").get(telegramUserId);
+  if (pending && Date.now() - Date.parse(pending.created_at) > 15 * 60 * 1000) db.prepare("DELETE FROM telegram_pending_wishes WHERE telegram_user_id=?").run(telegramUserId);
+  else if (pending && pending.chat_id === chatId && message.reply_to_message?.message_id === pending.prompt_message_id && !/^\//.test(text)) {
+    db.prepare("DELETE FROM telegram_pending_wishes WHERE telegram_user_id=?").run(telegramUserId);
+    await addTelegramWish(telegramUserId, senderName, chatId, text, req);
+    return;
+  }
+
+  const match = text.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  if (!match) return;
+  const command = match[1].toLowerCase();
+  const argument = String(match[2] || "").trim();
+  if (["help", "start", "menu"].includes(command)) { await sendTelegramMenu(chatId); return; }
+  if (command === "wishes") { await sendSiteWishesToTelegram(chatId); return; }
+  if (command === "wish") { await addTelegramWish(telegramUserId, senderName, chatId, argument, req); return; }
+  if (command === "mywishes") {
+    const rows = db.prepare("SELECT id,body FROM telegram_wishes WHERE telegram_user_id=? ORDER BY id DESC LIMIT 20").all(telegramUserId);
+    await sendTelegramText(chatId, rows.length ? `Ваши пожелания из Telegram:\n${rows.map((row) => `№${row.id}: ${row.body}`).join("\n")}` : "Вы ещё не добавляли пожеланий через Telegram.");
+    return;
+  }
+  if (command === "deletewish") {
+    const id = Number(argument);
+    if (!Number.isSafeInteger(id) || id < 1) { await sendTelegramText(chatId, "Укажите номер пожелания: /deletewish 12"); return; }
+    const result = db.prepare("DELETE FROM telegram_wishes WHERE id=? AND telegram_user_id=?").run(id, telegramUserId);
+    await sendTelegramText(chatId, result.changes ? `Пожелание №${id} удалено.` : "Такого вашего пожелания нет.");
+  }
+}
+
+async function ensureTelegramGroupMenu(chatId) {
+  const existing = db.prepare("SELECT setting_value FROM app_settings WHERE setting_key='telegram_menu_message_id'").get()?.setting_value;
+  if (!existing) {
+    const sent = await sendTelegramMenu(chatId);
+    if (sent?.message_id) {
+      db.prepare("INSERT INTO app_settings (setting_key,setting_value) VALUES ('telegram_menu_message_id',?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value").run(String(sent.message_id));
+      const pinned = await callTelegram("pinChatMessage", { chat_id: String(chatId), message_id: sent.message_id, disable_notification: true });
+      if (!pinned) console.log("Telegram menu was posted. Pin it manually if you want it to stay at the top of the group.");
+    }
+  } else {
+    const pinned = await callTelegram("pinChatMessage", { chat_id: String(chatId), message_id: Number(existing), disable_notification: true });
+    if (!pinned) console.log("Telegram menu is ready in the group; the bot could not pin it automatically.");
+  }
+}
+
+async function configureTelegramWebhook() {
+  const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  const baseUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
+  const secret = String(process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+  if (!token || !String(process.env.TELEGRAM_CHAT_ID || "").trim()) return;
+  if (!baseUrl || !secret || !/^[A-Za-z0-9_-]{16,256}$/.test(secret)) {
+    console.error("Telegram commands are disabled: set PUBLIC_APP_URL and TELEGRAM_WEBHOOK_SECRET (16-256 letters, digits, _ or -).");
+    return;
+  }
+  let parsedBase;
+  try { parsedBase = new URL(baseUrl); } catch { console.error("Telegram webhook setup failed: PUBLIC_APP_URL is invalid."); return; }
+  if (parsedBase.protocol !== "https:") { console.error("Telegram webhook setup failed: PUBLIC_APP_URL must use HTTPS."); return; }
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: `${baseUrl}/api/telegram/webhook`, secret_token: secret, allowed_updates: ["message", "callback_query"] }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok !== true) console.error("Telegram webhook setup failed:", response.status, result.error_code || "");
+    else {
+      const commandsResponse = await fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ commands: [
+          { command: "wishes", description: "Показать активные желания сайта" },
+          { command: "wish", description: "Добавить своё желание: /wish текст" },
+          { command: "mywishes", description: "Показать мои Telegram-пожелания" },
+          { command: "deletewish", description: "Удалить пожелание: /deletewish номер" },
+          { command: "menu", description: "Открыть кнопочное меню" },
+          { command: "help", description: "Показать команды бота" },
+        ] }), signal: AbortSignal.timeout(8000),
+      });
+      const commandsResult = await commandsResponse.json().catch(() => ({}));
+      if (!commandsResponse.ok || commandsResult.ok !== true) console.error("Telegram command menu setup failed:", commandsResponse.status, commandsResult.error_code || "");
+      await ensureTelegramGroupMenu(String(process.env.TELEGRAM_CHAT_ID).trim());
+      console.log("Telegram bot commands are ready.");
+    }
+  } catch (error) { console.error("Telegram webhook setup failed:", error?.name || "network error"); }
+}
+
+function sameWebhookSecret(received, expected) {
+  const left = Buffer.from(String(received || ""));
+  const right = Buffer.from(String(expected || ""));
+  return left.length === right.length && left.length > 0 && timingSafeEqual(left, right);
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   try {
+    if (req.method === "POST" && url.pathname === "/api/telegram/webhook") {
+      const expectedSecret = String(process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+      if (!sameWebhookSecret(req.headers["x-telegram-bot-api-secret-token"], expectedSecret)) {
+        send(res, 403, { ok: false });
+        return;
+      }
+      const update = await readBody(req);
+      const updateId = update?.update_id;
+      if (Number.isSafeInteger(updateId)) {
+        const stored = db.prepare("INSERT OR IGNORE INTO telegram_updates (update_id,processed_at) VALUES (?,?)")
+          .run(String(updateId), new Date().toISOString());
+        if (!stored.changes) { send(res, 200, { ok: true }); return; }
+        db.prepare("DELETE FROM telegram_updates WHERE processed_at<?").run(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString());
+      }
+      await handleTelegramUpdate(update, req);
+      send(res, 200, { ok: true });
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/api/data") {
       const member = needMember(req, res);
       if (member) send(res, 200, bootstrap(member));
@@ -392,6 +636,17 @@ const server = createServer(async (req, res) => {
       } finally {
         rmSync(backupDir, { recursive: true, force: true });
       }
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/admin/telegram-wishes/")) {
+      const member = needMember(req, res); if (!member || !needAdmin(member, res)) return;
+      const id = Number(decodeURIComponent(url.pathname.slice("/api/admin/telegram-wishes/".length)));
+      if (!Number.isSafeInteger(id) || id < 1) return fail(res, "Неверный номер Telegram-пожелания.", 404);
+      const wish = db.prepare("SELECT id,sender_name FROM telegram_wishes WHERE id=?").get(id);
+      if (!wish) return fail(res, "Пожелание не найдено.", 404);
+      db.prepare("DELETE FROM telegram_wishes WHERE id=?").run(id);
+      audit(req, "telegram_wish_deleted", member, { targetName: wish.sender_name, details: { telegramWishId: id } });
+      send(res, 200, { ok: true });
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/theme") {
@@ -808,5 +1063,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, "0.0.0.0", () => console.log(`Письмо Деду Морозу доступно на http://localhost:${port}`));
+server.listen(port, "0.0.0.0", () => {
+  console.log(`Письмо Деду Морозу доступно на http://localhost:${port}`);
+  void configureTelegramWebhook();
+});
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { db.close(); server.close(() => process.exit(0)); });
