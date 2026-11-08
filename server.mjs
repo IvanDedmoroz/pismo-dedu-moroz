@@ -21,6 +21,33 @@ const passwordBytes = 32;
 const loginFailures = new Map();
 const themeKeys = ["renaissance", "impressionist", "lubok", "moscow"];
 
+async function sendTelegramSuggestionNotification({ ownerName, authorName, text, visibility }) {
+  const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
+  const chatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  if (!token || !chatId || visibility === "private") return;
+
+  const lines = ["🎁 Новое предложение подарка", `Для: ${ownerName}`, "", text];
+  if (visibility === "public_anonymous") lines.push("", "Автор: анонимно");
+  else lines.push("", `Предложил(а): ${authorName}`);
+  const siteUrl = String(process.env.PUBLIC_APP_URL || "").trim();
+  if (siteUrl) lines.push("", siteUrl);
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: lines.join("\n") }),
+      signal: AbortSignal.timeout(8000),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok !== true) {
+      console.error("Telegram suggestion notification failed:", response.status, result.error_code || "");
+    }
+  } catch (error) {
+    console.error("Telegram suggestion notification failed:", error?.name || "network error");
+  }
+}
+
 if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 16) {
   console.error("ADMIN_PASSWORD is missing or too short. Start the app with the supplied .env file.");
   process.exit(1);
@@ -162,6 +189,8 @@ db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES 
   .run("release-2026-11-07-suggestion-privacy", "Общие и личные предложения подарков", "Предложения подарков теперь видны всем участникам по умолчанию. При отправке можно включить приватный режим: тогда предложение увидит только получатель и организатор.", "2026-11-07T15:00:00.000Z");
 db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
   .run("release-2026-11-07-suggestion-anonymity", "Анонимные предложения подарков", "Теперь можно выбрать: показывать предложение всем с именем, показывать анонимно или оставить видимым только получателю и организатору. Организатор видит автора в любом режиме.", "2026-11-07T15:30:00.000Z");
+db.prepare("INSERT OR IGNORE INTO app_updates (id,title,body,created_at) VALUES (?,?,?,?)")
+  .run("release-2026-11-08-telegram-notifications", "Уведомления о предложениях в Telegram", "Организатор может подключить Telegram-бота: публичные предложения приходят в выбранную группу. Анонимные идеи отправляются без имени автора, личные предложения не публикуются.", "2026-11-08T00:00:00.000Z");
 
 if (db.prepare("SELECT COUNT(*) AS n FROM members").get().n === 0) {
   const username = (process.env.ADMIN_USERNAME || "admin").trim().toLowerCase();
@@ -679,6 +708,7 @@ const server = createServer(async (req, res) => {
         .run(randomBytes(16).toString("hex"), ownerId, member.id, text, new Date().toISOString(), Number(isPrivate), Number(isAnonymous));
       const owner = db.prepare("SELECT name,username FROM members WHERE id=?").get(ownerId);
       audit(req, "suggestion_added", member, { targetUsername: owner?.username, targetName: owner?.name, details: { text, visibility } });
+      await sendTelegramSuggestionNotification({ ownerName: owner?.name || "участника", authorName: member.name, text, visibility });
       send(res, 201, { ok: true });
       return;
     }
