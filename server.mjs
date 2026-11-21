@@ -47,10 +47,14 @@ async function sendTelegramText(chatId, text, replyMarkup) {
   return callTelegram("sendMessage", { chat_id: String(chatId), text, ...(replyMarkup ? { reply_markup: replyMarkup } : {}) });
 }
 
+function telegramGroupIds() {
+  return [...new Set(String(process.env.TELEGRAM_CHAT_ID || "").split(/[\s,;]+/).map((id) => id.trim()).filter(Boolean))];
+}
+
 async function sendTelegramSuggestionNotification({ ownerName, authorName, text, visibility }) {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
-  const chatId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
-  if (!token || !chatId || visibility === "private") return;
+  const chatIds = telegramGroupIds();
+  if (!token || !chatIds.length || visibility === "private") return;
 
   const lines = ["🎁 Новое предложение подарка", `Для: ${ownerName}`, "", text];
   if (visibility === "public_anonymous") lines.push("", "Автор: анонимно");
@@ -58,7 +62,7 @@ async function sendTelegramSuggestionNotification({ ownerName, authorName, text,
   const siteUrl = String(process.env.PUBLIC_APP_URL || "").trim();
   if (siteUrl) lines.push("", siteUrl);
 
-  await sendTelegramText(chatId, lines.join("\n"));
+  await Promise.all(chatIds.map((chatId) => sendTelegramText(chatId, lines.join("\n"))));
 }
 
 if (!process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD.length < 16) {
@@ -452,11 +456,11 @@ async function addTelegramWish(telegramUserId, senderName, chatId, text, req) {
 }
 
 async function handleTelegramUpdate(update, req) {
-  const configuredGroupId = String(process.env.TELEGRAM_CHAT_ID || "").trim();
+  const configuredGroupIds = new Set(telegramGroupIds());
   const callback = update?.callback_query;
   if (callback) {
     const chatId = String(callback.message?.chat?.id || "");
-    if (chatId !== configuredGroupId || !["group", "supergroup"].includes(callback.message?.chat?.type)) return;
+    if (!configuredGroupIds.has(chatId) || !["group", "supergroup"].includes(callback.message?.chat?.type)) return;
     const telegramUserId = String(callback.from?.id || "");
     const senderName = [callback.from?.first_name, callback.from?.last_name].filter(Boolean).join(" ").slice(0, 120) || "Участник Telegram";
     const action = String(callback.data || "");
@@ -488,12 +492,18 @@ async function handleTelegramUpdate(update, req) {
   }
 
   const message = update?.message;
-  if (!configuredGroupId || !message || String(message.chat?.id) !== configuredGroupId) return;
-  if (!["group", "supergroup"].includes(message.chat?.type) || !message.from || message.from.is_bot) return;
+  if (!message || !["group", "supergroup"].includes(message.chat?.type) || !message.from || message.from.is_bot) return;
   const chatId = String(message.chat.id);
+  const text = String(message.text || "").trim();
+  const commandMatch = text.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  if (!configuredGroupIds.has(chatId)) {
+    if (commandMatch?.[1].toLowerCase() === "chatid") {
+      await sendTelegramText(chatId, `ID этой группы: ${chatId}\nДобавьте его в TELEGRAM_CHAT_ID через запятую с остальными ID и перезапустите приложение.`);
+    }
+    return;
+  }
   const telegramUserId = String(message.from.id);
   const senderName = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ").slice(0, 120) || "Участник Telegram";
-  const text = String(message.text || "").trim();
   const pending = db.prepare("SELECT chat_id,prompt_message_id,created_at FROM telegram_pending_wishes WHERE telegram_user_id=?").get(telegramUserId);
   if (pending && Date.now() - Date.parse(pending.created_at) > 15 * 60 * 1000) db.prepare("DELETE FROM telegram_pending_wishes WHERE telegram_user_id=?").run(telegramUserId);
   else if (pending && pending.chat_id === chatId && message.reply_to_message?.message_id === pending.prompt_message_id && !/^\//.test(text)) {
@@ -502,11 +512,12 @@ async function handleTelegramUpdate(update, req) {
     return;
   }
 
-  const match = text.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s+([\s\S]*))?$/i);
+  const match = commandMatch;
   if (!match) return;
   const command = match[1].toLowerCase();
   const argument = String(match[2] || "").trim();
   if (["help", "start", "menu"].includes(command)) { await sendTelegramMenu(chatId); return; }
+  if (command === "chatid") { await sendTelegramText(chatId, `ID этой группы: ${chatId}`); return; }
   if (command === "wishes") { await sendSiteWishesToTelegram(chatId); return; }
   if (command === "wish") { await addTelegramWish(telegramUserId, senderName, chatId, argument, req); return; }
   if (command === "mywishes") {
@@ -523,11 +534,12 @@ async function handleTelegramUpdate(update, req) {
 }
 
 async function ensureTelegramGroupMenu(chatId) {
-  const existing = db.prepare("SELECT setting_value FROM app_settings WHERE setting_key='telegram_menu_message_id'").get()?.setting_value;
+  const settingKey = `telegram_menu_message_id:${chatId}`;
+  const existing = db.prepare("SELECT setting_value FROM app_settings WHERE setting_key=?").get(settingKey)?.setting_value;
   if (!existing) {
     const sent = await sendTelegramMenu(chatId);
     if (sent?.message_id) {
-      db.prepare("INSERT INTO app_settings (setting_key,setting_value) VALUES ('telegram_menu_message_id',?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value").run(String(sent.message_id));
+      db.prepare("INSERT INTO app_settings (setting_key,setting_value) VALUES (?,?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value").run(settingKey, String(sent.message_id));
       const pinned = await callTelegram("pinChatMessage", { chat_id: String(chatId), message_id: sent.message_id, disable_notification: true });
       if (!pinned) console.log("Telegram menu was posted. Pin it manually if you want it to stay at the top of the group.");
     }
@@ -541,7 +553,8 @@ async function configureTelegramWebhook() {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
   const baseUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/+$/, "");
   const secret = String(process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
-  if (!token || !String(process.env.TELEGRAM_CHAT_ID || "").trim()) return;
+  const chatIds = telegramGroupIds();
+  if (!token || !chatIds.length) return;
   if (!baseUrl || !secret || !/^[A-Za-z0-9_-]{16,256}$/.test(secret)) {
     console.error("Telegram commands are disabled: set PUBLIC_APP_URL and TELEGRAM_WEBHOOK_SECRET (16-256 letters, digits, _ or -).");
     return;
@@ -571,7 +584,7 @@ async function configureTelegramWebhook() {
       });
       const commandsResult = await commandsResponse.json().catch(() => ({}));
       if (!commandsResponse.ok || commandsResult.ok !== true) console.error("Telegram command menu setup failed:", commandsResponse.status, commandsResult.error_code || "");
-      await ensureTelegramGroupMenu(String(process.env.TELEGRAM_CHAT_ID).trim());
+      for (const chatId of chatIds) await ensureTelegramGroupMenu(chatId);
       console.log("Telegram bot commands are ready.");
     }
   } catch (error) { console.error("Telegram webhook setup failed:", error?.name || "network error"); }
